@@ -1,0 +1,52 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.73.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Accept Xcode license
+        run: sudo xcodebuild -license accept
+
+      - name: Build VoiceInk
+        run: make local
+
+      - name: Create DMG
+        run: |
+          APP_PATH="$HOME/Downloads/VoiceInk.app"
+          DMG_PATH="VoiceInk.dmg"
+          hdiutil create -volname "VoiceInk" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: VoiceInk ${{ steps.version.outputs.tag }}
+          files: VoiceInk.dmg
+          generate_release_notes: true
