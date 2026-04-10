@@ -1,0 +1,104 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # Daily at 6 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Beingpax/VoiceInk.git
+          git fetch upstream main --tags
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          FORK_BASE=$(git merge-base HEAD upstream/main)
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+
+          if [ "$FORK_BASE" = "$UPSTREAM_HEAD" ]; then
+            echo "No new upstream commits."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            COUNT=$(git rev-list "$FORK_BASE".."$UPSTREAM_HEAD" --count)
+            echo "Found $COUNT new upstream commit(s)."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase fork onto upstream
+        id: rebase
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          if git rebase upstream/main; then
+            echo "Rebase succeeded."
+            git push --force-with-lease origin main
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Rebase failed — conflicts detected."
+            git rebase --abort
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag fork release
+        if: steps.rebase.outputs.synced == 'true'
+        run: |
+          # Use latest upstream version tag + .1 suffix for fork builds
+          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-version:refname | head -1)
+          FORK_TAG="${LATEST_TAG}.1"
+
+          if git rev-parse "$FORK_TAG" >/dev/null 2>&1; then
+            echo "Tag $FORK_TAG already exists, skipping."
+          else
+            echo "Creating fork tag: $FORK_TAG"
+            git tag "$FORK_TAG"
+            git push origin "$FORK_TAG"
+          fi
+
+      - name: Open PR on conflict
+        if: steps.check.outputs.has_changes == 'true' && steps.rebase.outputs.synced == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d)"
+
+          git checkout -b "$BRANCH" origin/main
+          git merge upstream/main --no-edit || true
+          git add -A
+          git commit -m "chore: merge upstream (conflicts need resolution)" || true
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: sync with upstream (conflicts)" \
+            --body "$(cat <<'EOF'
+          ## Upstream Sync — Manual Resolution Required
+
+          Automatic rebase of fork commits onto upstream/main failed due to conflicts.
+
+          **Steps to resolve:**
+          1. Check out this branch locally
+          2. Resolve conflicts, then rebase onto upstream: `git rebase upstream/main`
+          3. Force-push the result to `main`
+
+          Upstream: https://github.com/Beingpax/VoiceInk
+          EOF
+          )" \
+            --base main \
+            --head "$BRANCH"
