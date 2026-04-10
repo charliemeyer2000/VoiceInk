@@ -54,3 +54,11 @@ jobs:
           name: VoiceInk ${{ steps.version.outputs.tag }}
           files: VoiceInk.dmg
           generate_release_notes: true
+
+      - name: Trigger overlay update
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          gh workflow run update.yml \
+            --repo charliemeyer2000/voiceink-overlay \
+            -f version="${{ steps.version.outputs.tag }}"
