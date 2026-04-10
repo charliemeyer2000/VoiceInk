@@ -7,6 +7,7 @@ struct ModelSettingsView: View {
     @AppStorage("IsVADEnabled") private var isVADEnabled = true
     @AppStorage("AppendTrailingSpace") private var appendTrailingSpace = true
     @AppStorage("PrewarmModelOnWake") private var prewarmModelOnWake = true
+    @AppStorage("WhisperThreadCount") private var whisperThreadCount = 0
     @State private var customPrompt: String = ""
     @State private var isEditing: Bool = false
 
@@ -81,6 +82,41 @@ struct ModelSettingsView: View {
             }
 
             Section {
+                Picker("Threads", selection: $whisperThreadCount) {
+                    Text("Auto (\(perfCoreCount()) P-cores)")
+                        .tag(0)
+                    ForEach(1...ProcessInfo.processInfo.processorCount, id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Label {
+                        Text("\(cpuBrandString()) · \(ProcessInfo.processInfo.processorCount) cores (\(perfCoreCount())P+\(ProcessInfo.processInfo.processorCount - perfCoreCount())E) · \(ramString())")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } icon: {
+                        Image(systemName: "cpu")
+                            .foregroundColor(.secondary)
+                    }
+                    Label {
+                        Text("Metal GPU acceleration is always enabled")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } icon: {
+                        Image(systemName: "bolt.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("Performance")
+                    InfoTip("Controls how many CPU threads whisper.cpp uses for decoding. Auto selects performance cores only, avoiding efficiency cores which slow down inference. Metal GPU is always used for the encoder.")
+                }
+            }
+
+            Section {
                 FillerWordsSettingsView()
             }
         }
@@ -91,5 +127,27 @@ struct ModelSettingsView: View {
                 customPrompt = whisperPrompt.getLanguagePrompt(for: selectedLanguage)
             }
         }
+    }
+
+    private func perfCoreCount() -> Int {
+        var size = MemoryLayout<Int32>.size
+        var count: Int32 = 0
+        if sysctlbyname("hw.perflevel0.logicalcpu", &count, &size, nil, 0) == 0, count > 0 {
+            return Int(count)
+        }
+        return max(1, ProcessInfo.processInfo.processorCount / 2)
+    }
+
+    private func cpuBrandString() -> String {
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var buffer = [CChar](repeating: 0, count: size)
+        sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
+        let brand = String(cString: buffer)
+        return brand.isEmpty ? "Apple Silicon" : brand
+    }
+
+    private func ramString() -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
     }
 }
