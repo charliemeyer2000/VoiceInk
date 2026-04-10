@@ -50,6 +50,9 @@ enum AppDefaults {
             // Model
             "PrewarmModelOnWake": true,
 
+            // Performance (0 = auto-detect optimal thread count)
+            "WhisperThreadCount": 0,
+
         ])
     }
 }

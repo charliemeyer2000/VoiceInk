@@ -30,10 +30,19 @@ actor WhisperContext {
 
     func fullTranscribe(samples: [Float]) -> Bool {
         guard let context = context else { return false }
-        
-        let maxThreads = max(1, min(8, cpuCount() - 2))
+
+        let threadSetting = UserDefaults.standard.integer(forKey: "WhisperThreadCount")
+        let maxThreads: Int
+        if threadSetting > 0 {
+            maxThreads = threadSetting
+        } else {
+            // Auto: use performance cores (half of total on Apple Silicon)
+            maxThreads = max(1, perfCoreCount())
+        }
+        logger.info("Transcribing with \(maxThreads) threads (setting=\(threadSetting), perf=\(perfCoreCount()), total=\(cpuCount()))")
+
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        
+
         // Read language directly from UserDefaults
         let selectedLanguage = UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto"
         if selectedLanguage != "auto" {
@@ -45,7 +54,7 @@ actor WhisperContext {
             languageCString = nil
             params.language = nil
         }
-        
+
         if prompt != nil {
             promptCString = Array(prompt!.utf8CString)
             params.initial_prompt = promptCString?.withUnsafeBufferPointer { ptr in
@@ -55,16 +64,16 @@ actor WhisperContext {
             promptCString = nil
             params.initial_prompt = nil
         }
-        
-        params.print_realtime = true
+
+        params.print_realtime = false
         params.print_progress = false
-        params.print_timestamps = true
+        params.print_timestamps = false
         params.print_special = false
         params.translate = false
         params.n_threads = Int32(maxThreads)
         params.offset_ms = 0
         params.no_context = true
-        params.single_segment = false
+        params.single_segment = true
         params.temperature = 0.2
 
         whisper_reset_timings(context)
@@ -162,4 +171,15 @@ actor WhisperContext {
 
 fileprivate func cpuCount() -> Int {
     ProcessInfo.processInfo.processorCount
+}
+
+fileprivate func perfCoreCount() -> Int {
+    var size = MemoryLayout<Int32>.size
+    var count: Int32 = 0
+    // hw.perflevel0.logicalcpu = performance cores on Apple Silicon
+    if sysctlbyname("hw.perflevel0.logicalcpu", &count, &size, nil, 0) == 0, count > 0 {
+        return Int(count)
+    }
+    // Fallback: assume half of total cores are performance cores
+    return max(1, ProcessInfo.processInfo.processorCount / 2)
 }
