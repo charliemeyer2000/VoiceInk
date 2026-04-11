@@ -270,18 +270,26 @@ struct OnboardingPermissionsView: View {
     private func checkExistingPermissions() {
         // Check microphone permission
         permissionStates[0] = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        
+
         // Check if device is selected
         permissionStates[1] = audioDeviceManager.selectedDeviceID != nil
-        
+
         // Check accessibility permission
         permissionStates[2] = AXIsProcessTrusted()
-        
+
         // Check screen recording permission
         permissionStates[3] = CGPreflightScreenCaptureAccess()
-        
+
         // Check keyboard shortcut
         permissionStates[4] = hotkeyManager.isShortcutConfigured
+
+        // Skip ahead to the first permission that still needs granting
+        if let firstIncomplete = permissionStates.firstIndex(where: { !$0 }) {
+            currentPermissionIndex = firstIncomplete
+        } else {
+            // All permissions granted — go straight to model download
+            showModelDownload = true
+        }
     }
     
     private func requestPermission() {
@@ -458,27 +466,34 @@ struct OnboardingPermissionsView: View {
         onConfigured: @escaping (Bool) -> Void
     ) -> some View {
         VStack(spacing: 16) {
-            styledPicker(
-                label: "Shortcut:",
-                selectedValue: binding.wrappedValue,
-                displayValue: binding.wrappedValue.displayName,
-                options: HotkeyManager.HotkeyOption.allCases.filter { $0 != .none && $0 != .custom },
-                optionDisplayName: { $0.displayName },
-                onSelection: { option in
-                    binding.wrappedValue = option
-                    onConfigured(option.isModifierKey)
-                }
-            )
+            HStack(spacing: 12) {
+                Spacer()
 
-            if binding.wrappedValue == .custom {
-                KeyboardShortcuts.Recorder(for: shortcutName) { newShortcut in
-                    onConfigured(newShortcut != nil)
+                Text("Mode:")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+
+                Picker("", selection: $hotkeyManager.hotkeyMode1) {
+                    ForEach(HotkeyManager.HotkeyMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
                 }
-                .controlSize(.large)
+                .labelsHidden()
+                .fixedSize()
+
+                Spacer()
             }
+
+            ModifierComboRecorder(modifierFlags: $hotkeyManager.comboModifierFlags1)
+                .onChange(of: hotkeyManager.comboModifierFlags1) { _, newFlags in
+                    if !newFlags.isEmpty && binding.wrappedValue != .combo {
+                        binding.wrappedValue = .combo
+                    }
+                    onConfigured(!newFlags.isEmpty)
+                }
         }
-        .onChange(of: binding.wrappedValue) { newValue in
-            onConfigured(newValue != .none)
-        }
+        .padding()
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(12)
     }
 }

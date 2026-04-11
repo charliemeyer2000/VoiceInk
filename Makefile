@@ -55,6 +55,7 @@ local: check setup
 		CODE_SIGNING_REQUIRED=NO \
 		CODE_SIGNING_ALLOWED=YES \
 		DEVELOPMENT_TEAM="" \
+		PRODUCT_BUNDLE_IDENTIFIER=com.prakashjoshipax.VoiceInk \
 		CODE_SIGN_ENTITLEMENTS=$(CURDIR)/VoiceInk/VoiceInk.local.entitlements \
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
 		build

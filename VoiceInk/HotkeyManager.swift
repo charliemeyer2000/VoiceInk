@@ -41,6 +41,18 @@ class HotkeyManager: ObservableObject {
             UserDefaults.standard.set(hotkeyMode2.rawValue, forKey: "hotkeyMode2")
         }
     }
+    @Published var comboModifierFlags1: NSEvent.ModifierFlags {
+        didSet {
+            UserDefaults.standard.set(NSNumber(value: comboModifierFlags1.rawValue), forKey: "comboModifierFlags1")
+            setupHotkeyMonitoring()
+        }
+    }
+    @Published var comboModifierFlags2: NSEvent.ModifierFlags {
+        didSet {
+            UserDefaults.standard.set(NSNumber(value: comboModifierFlags2.rawValue), forKey: "comboModifierFlags2")
+            setupHotkeyMonitoring()
+        }
+    }
     @Published var isMiddleClickToggleEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isMiddleClickToggleEnabled, forKey: "isMiddleClickToggleEnabled")
@@ -89,6 +101,14 @@ class HotkeyManager: ObservableObject {
     private var lastShortcutTriggerTime: Date?
     private let shortcutCooldownInterval: TimeInterval = 0.5
 
+    // Combo state tracking
+    private var combo1CurrentKeyState = false
+    private var combo1KeyPressEventTime: TimeInterval?
+    private var isCombo1HandsFreeMode = false
+    private var combo2CurrentKeyState = false
+    private var combo2KeyPressEventTime: TimeInterval?
+    private var isCombo2HandsFreeMode = false
+
     private static let hybridPressThreshold: TimeInterval = 0.5
 
     enum HotkeyMode: String, CaseIterable {
@@ -109,13 +129,14 @@ class HotkeyManager: ObservableObject {
         case none = "none"
         case rightOption = "rightOption"
         case leftOption = "leftOption"
-        case leftControl = "leftControl" 
+        case leftControl = "leftControl"
         case rightControl = "rightControl"
         case fn = "fn"
         case rightCommand = "rightCommand"
         case rightShift = "rightShift"
         case custom = "custom"
-        
+        case combo = "combo"
+
         var displayName: String {
             switch self {
             case .none: return "None"
@@ -127,9 +148,10 @@ class HotkeyManager: ObservableObject {
             case .rightCommand: return "Right Command (⌘)"
             case .rightShift: return "Right Shift (⇧)"
             case .custom: return "Custom"
+            case .combo: return "Modifier Combo"
             }
         }
-        
+
         var keyCode: CGKeyCode? {
             switch self {
             case .rightOption: return 0x3D
@@ -139,12 +161,12 @@ class HotkeyManager: ObservableObject {
             case .fn: return 0x3F
             case .rightCommand: return 0x36
             case .rightShift: return 0x3C
-            case .custom, .none: return nil
+            case .custom, .none, .combo: return nil
             }
         }
-        
+
         var isModifierKey: Bool {
-            return self != .custom && self != .none
+            return self != .custom && self != .none && self != .combo
         }
     }
     
@@ -154,6 +176,11 @@ class HotkeyManager: ObservableObject {
 
         self.hotkeyMode1 = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: "hotkeyMode1") ?? "") ?? .hybrid
         self.hotkeyMode2 = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: "hotkeyMode2") ?? "") ?? .hybrid
+
+        let comboRaw1 = (UserDefaults.standard.object(forKey: "comboModifierFlags1") as? NSNumber)?.uintValue ?? 0
+        self.comboModifierFlags1 = NSEvent.ModifierFlags(rawValue: UInt(comboRaw1))
+        let comboRaw2 = (UserDefaults.standard.object(forKey: "comboModifierFlags2") as? NSNumber)?.uintValue ?? 0
+        self.comboModifierFlags2 = NSEvent.ModifierFlags(rawValue: UInt(comboRaw2))
 
         self.isMiddleClickToggleEnabled = UserDefaults.standard.bool(forKey: "isMiddleClickToggleEnabled")
         self.middleClickActivationDelay = UserDefaults.standard.integer(forKey: "middleClickActivationDelay")
@@ -221,8 +248,9 @@ class HotkeyManager: ObservableObject {
     }
     
     private func setupModifierKeyMonitoring() {
-        // Only set up if at least one hotkey is a modifier key
-        guard (selectedHotkey1.isModifierKey && selectedHotkey1 != .none) || (selectedHotkey2.isModifierKey && selectedHotkey2 != .none) else { return }
+        let needsSingleKey = (selectedHotkey1.isModifierKey && selectedHotkey1 != .none) || (selectedHotkey2.isModifierKey && selectedHotkey2 != .none)
+        let needsCombo = (selectedHotkey1 == .combo && !comboModifierFlags1.isEmpty) || (selectedHotkey2 == .combo && !comboModifierFlags2.isEmpty)
+        guard needsSingleKey || needsCombo else { return }
 
         globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self = self else { return }
@@ -326,13 +354,22 @@ class HotkeyManager: ObservableObject {
         shortcutCurrentKeyState = false
         shortcutKeyPressEventTime = nil
         isShortcutHandsFreeMode = false
+        combo1CurrentKeyState = false
+        combo1KeyPressEventTime = nil
+        isCombo1HandsFreeMode = false
+        combo2CurrentKeyState = false
+        combo2KeyPressEventTime = nil
+        isCombo2HandsFreeMode = false
     }
     
+    private static let relevantModifiers: NSEvent.ModifierFlags = [.control, .option, .shift, .command, .function]
+
     private func handleModifierKeyEvent(_ event: NSEvent) async {
         let keycode = event.keyCode
         let flags = event.modifierFlags
         let eventTime = event.timestamp
 
+        // Handle single-modifier hotkeys
         let activeMode: HotkeyMode
         let activeHotkey: HotkeyOption?
         if selectedHotkey1.isModifierKey && selectedHotkey1.keyCode == keycode {
@@ -346,37 +383,53 @@ class HotkeyManager: ObservableObject {
             activeMode = .toggle
         }
 
-        guard let hotkey = activeHotkey else { return }
+        if let hotkey = activeHotkey {
+            var isKeyPressed = false
 
-        var isKeyPressed = false
-
-        switch hotkey {
-        case .rightOption, .leftOption:
-            isKeyPressed = flags.contains(.option)
-        case .leftControl, .rightControl:
-            isKeyPressed = flags.contains(.control)
-        case .fn:
-            isKeyPressed = flags.contains(.function)
-            pendingFnKeyState = isKeyPressed
-            pendingFnEventTime = eventTime
-            fnDebounceTask?.cancel()
-            fnDebounceTask = Task { [pendingState = isKeyPressed, pendingTime = eventTime] in
-                try? await Task.sleep(nanoseconds: 75_000_000) // 75ms
-                guard !Task.isCancelled, pendingFnKeyState == pendingState else { return }
-                Task { @MainActor in
-                    await self.processKeyPress(isKeyPressed: pendingState, eventTime: pendingTime, mode: activeMode)
+            switch hotkey {
+            case .rightOption, .leftOption:
+                isKeyPressed = flags.contains(.option)
+            case .leftControl, .rightControl:
+                isKeyPressed = flags.contains(.control)
+            case .fn:
+                isKeyPressed = flags.contains(.function)
+                pendingFnKeyState = isKeyPressed
+                pendingFnEventTime = eventTime
+                fnDebounceTask?.cancel()
+                fnDebounceTask = Task { [pendingState = isKeyPressed, pendingTime = eventTime] in
+                    try? await Task.sleep(nanoseconds: 75_000_000) // 75ms
+                    guard !Task.isCancelled, pendingFnKeyState == pendingState else { return }
+                    Task { @MainActor in
+                        await self.processKeyPress(isKeyPressed: pendingState, eventTime: pendingTime, mode: activeMode)
+                    }
                 }
+                // Don't return — still check combos below
+                if selectedHotkey1 != .combo && selectedHotkey2 != .combo { return }
+            case .rightCommand:
+                isKeyPressed = flags.contains(.command)
+            case .rightShift:
+                isKeyPressed = flags.contains(.shift)
+            default:
+                break
             }
-            return
-        case .rightCommand:
-            isKeyPressed = flags.contains(.command)
-        case .rightShift:
-            isKeyPressed = flags.contains(.shift)
-        case .custom, .none:
-            return // Should not reach here
+
+            if hotkey != .fn {
+                await processKeyPress(isKeyPressed: isKeyPressed, eventTime: eventTime, mode: activeMode)
+            }
         }
 
-        await processKeyPress(isKeyPressed: isKeyPressed, eventTime: eventTime, mode: activeMode)
+        // Handle combo hotkeys
+        let currentFlags = flags.intersection(Self.relevantModifiers)
+        if selectedHotkey1 == .combo && !comboModifierFlags1.isEmpty {
+            let required = comboModifierFlags1.intersection(Self.relevantModifiers)
+            let allHeld = currentFlags.contains(required)
+            await processComboKeyPress(slot: 1, isKeyPressed: allHeld, eventTime: eventTime, mode: hotkeyMode1)
+        }
+        if selectedHotkey2 == .combo && !comboModifierFlags2.isEmpty {
+            let required = comboModifierFlags2.intersection(Self.relevantModifiers)
+            let allHeld = currentFlags.contains(required)
+            await processComboKeyPress(slot: 2, isKeyPressed: allHeld, eventTime: eventTime, mode: hotkeyMode2)
+        }
     }
 
     private func processKeyPress(isKeyPressed: Bool, eventTime: TimeInterval, mode: HotkeyMode) async {
@@ -436,6 +489,57 @@ class HotkeyManager: ObservableObject {
         }
     }
     
+    private func processComboKeyPress(slot: Int, isKeyPressed: Bool, eventTime: TimeInterval, mode: HotkeyMode) async {
+        let currentState = slot == 1 ? combo1CurrentKeyState : combo2CurrentKeyState
+        guard isKeyPressed != currentState else { return }
+
+        if slot == 1 { combo1CurrentKeyState = isKeyPressed } else { combo2CurrentKeyState = isKeyPressed }
+
+        if isKeyPressed {
+            if slot == 1 { combo1KeyPressEventTime = eventTime } else { combo2KeyPressEventTime = eventTime }
+
+            switch mode {
+            case .toggle, .hybrid:
+                let handsFree = slot == 1 ? isCombo1HandsFreeMode : isCombo2HandsFreeMode
+                if handsFree {
+                    if slot == 1 { isCombo1HandsFreeMode = false } else { isCombo2HandsFreeMode = false }
+                    guard canProcessHotkeyAction else { return }
+                    await recorderUIManager.toggleMiniRecorder()
+                    return
+                }
+                if !recorderUIManager.isMiniRecorderVisible {
+                    guard canProcessHotkeyAction else { return }
+                    await recorderUIManager.toggleMiniRecorder()
+                }
+            case .pushToTalk:
+                if !recorderUIManager.isMiniRecorderVisible {
+                    guard canProcessHotkeyAction else { return }
+                    await recorderUIManager.toggleMiniRecorder()
+                }
+            }
+        } else {
+            let pressTime = slot == 1 ? combo1KeyPressEventTime : combo2KeyPressEventTime
+            switch mode {
+            case .toggle:
+                if slot == 1 { isCombo1HandsFreeMode = true } else { isCombo2HandsFreeMode = true }
+            case .pushToTalk:
+                if recorderUIManager.isMiniRecorderVisible {
+                    guard canProcessHotkeyAction else { return }
+                    await recorderUIManager.toggleMiniRecorder()
+                }
+            case .hybrid:
+                let pressDuration = pressTime.map { eventTime - $0 } ?? 0
+                if pressDuration >= Self.hybridPressThreshold && engine.recordingState == .recording {
+                    guard canProcessHotkeyAction else { return }
+                    await recorderUIManager.toggleMiniRecorder()
+                } else {
+                    if slot == 1 { isCombo1HandsFreeMode = true } else { isCombo2HandsFreeMode = true }
+                }
+            }
+            if slot == 1 { combo1KeyPressEventTime = nil } else { combo2KeyPressEventTime = nil }
+        }
+    }
+
     private func handleCustomShortcutKeyDown(eventTime: TimeInterval, mode: HotkeyMode) async {
         if let lastTrigger = lastShortcutTriggerTime,
            Date().timeIntervalSince(lastTrigger) < shortcutCooldownInterval {
@@ -503,8 +607,18 @@ class HotkeyManager: ObservableObject {
     
     // Computed property for backward compatibility with UI
     var isShortcutConfigured: Bool {
-        let isHotkey1Configured = (selectedHotkey1 == .custom) ? (KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder) != nil) : true
-        let isHotkey2Configured = (selectedHotkey2 == .custom) ? (KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder2) != nil) : true
+        let isHotkey1Configured: Bool
+        switch selectedHotkey1 {
+        case .custom: isHotkey1Configured = KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder) != nil
+        case .combo: isHotkey1Configured = !comboModifierFlags1.isEmpty
+        default: isHotkey1Configured = true
+        }
+        let isHotkey2Configured: Bool
+        switch selectedHotkey2 {
+        case .custom: isHotkey2Configured = KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder2) != nil
+        case .combo: isHotkey2Configured = !comboModifierFlags2.isEmpty
+        default: isHotkey2Configured = true
+        }
         return isHotkey1Configured && isHotkey2Configured
     }
     
@@ -519,5 +633,17 @@ class HotkeyManager: ObservableObject {
         Task { @MainActor in
             removeAllMonitoring()
         }
+    }
+}
+
+extension NSEvent.ModifierFlags {
+    var symbolString: String {
+        var symbols: [String] = []
+        if contains(.control) { symbols.append("⌃") }
+        if contains(.option) { symbols.append("⌥") }
+        if contains(.shift) { symbols.append("⇧") }
+        if contains(.command) { symbols.append("⌘") }
+        if contains(.function) { symbols.append("fn") }
+        return symbols.joined()
     }
 }
