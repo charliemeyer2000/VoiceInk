@@ -37,44 +37,30 @@ struct SettingsView: View {
         Form {
             // MARK: - Shortcuts
             Section {
-                LabeledContent("Shortcut 1") {
-                    HStack(spacing: 8) {
-                        Spacer()
-                        if hotkeyManager.selectedHotkey1 != .none {
-                            hotkeyModePicker(binding: $hotkeyManager.hotkeyMode1)
-                        }
-                        hotkeyPicker(binding: $hotkeyManager.selectedHotkey1)
-                        if hotkeyManager.selectedHotkey1 == .custom {
-                            KeyboardShortcuts.Recorder(for: .toggleMiniRecorder)
-                                .controlSize(.small)
-                        }
-                    }
-                }
+                shortcutRow(
+                    label: "Shortcut 1",
+                    hotkeyBinding: $hotkeyManager.selectedHotkey1,
+                    modeBinding: $hotkeyManager.hotkeyMode1,
+                    comboFlagsBinding: $hotkeyManager.comboModifierFlags1,
+                    shortcutName: .toggleMiniRecorder
+                )
 
                 if hotkeyManager.selectedHotkey2 != .none {
-                    LabeledContent("Shortcut 2") {
-                        HStack(spacing: 8) {
-                            Spacer()
-                            hotkeyModePicker(binding: $hotkeyManager.hotkeyMode2)
-                            hotkeyPicker(binding: $hotkeyManager.selectedHotkey2)
-                            if hotkeyManager.selectedHotkey2 == .custom {
-                                KeyboardShortcuts.Recorder(for: .toggleMiniRecorder2)
-                                    .controlSize(.small)
-                            }
-                            Button {
-                                withAnimation { hotkeyManager.selectedHotkey2 = .none }
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    shortcutRow(
+                        label: "Shortcut 2",
+                        hotkeyBinding: $hotkeyManager.selectedHotkey2,
+                        modeBinding: $hotkeyManager.hotkeyMode2,
+                        comboFlagsBinding: $hotkeyManager.comboModifierFlags2,
+                        shortcutName: .toggleMiniRecorder2,
+                        showRemove: true
+                    )
                 }
 
                 if hotkeyManager.selectedHotkey1 != .none && hotkeyManager.selectedHotkey2 == .none {
                     Button("Add Second Shortcut") {
-                        withAnimation { hotkeyManager.selectedHotkey2 = .rightOption }
+                        withAnimation {
+                            hotkeyManager.selectedHotkey2 = .combo
+                        }
                     }
                 }
             } header: {
@@ -309,25 +295,43 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func hotkeyPicker(binding: Binding<HotkeyManager.HotkeyOption>) -> some View {
-        Picker("", selection: binding) {
-            ForEach(HotkeyManager.HotkeyOption.allCases, id: \.self) { option in
-                Text(option.displayName).tag(option)
-            }
-        }
-        .labelsHidden()
-        .fixedSize()
-    }
+    private func shortcutRow(
+        label: String,
+        hotkeyBinding: Binding<HotkeyManager.HotkeyOption>,
+        modeBinding: Binding<HotkeyManager.HotkeyMode>,
+        comboFlagsBinding: Binding<NSEvent.ModifierFlags>,
+        shortcutName: KeyboardShortcuts.Name,
+        showRemove: Bool = false
+    ) -> some View {
+        LabeledContent(label) {
+            HStack(spacing: 8) {
+                Spacer()
+                Picker("", selection: modeBinding) {
+                    ForEach(HotkeyManager.HotkeyMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
 
-    @ViewBuilder
-    private func hotkeyModePicker(binding: Binding<HotkeyManager.HotkeyMode>) -> some View {
-        Picker("", selection: binding) {
-            ForEach(HotkeyManager.HotkeyMode.allCases, id: \.self) { mode in
-                Text(mode.displayName).tag(mode)
+                ModifierComboRecorder(modifierFlags: comboFlagsBinding)
+                    .onChange(of: comboFlagsBinding.wrappedValue) { _, _ in
+                        if hotkeyBinding.wrappedValue != .combo {
+                            hotkeyBinding.wrappedValue = .combo
+                        }
+                    }
+
+                if showRemove {
+                    Button {
+                        withAnimation { hotkeyBinding.wrappedValue = .none }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
-        .labelsHidden()
-        .fixedSize()
     }
 }
 

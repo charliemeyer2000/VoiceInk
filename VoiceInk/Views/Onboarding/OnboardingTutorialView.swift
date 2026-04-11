@@ -46,6 +46,14 @@ struct OnboardingTutorialView: View {
                                let shortcut = KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder) {
                                 KeyboardShortcutView(shortcut: shortcut)
                                     .scaleEffect(1.2)
+                            } else if hotkeyManager.selectedHotkey1 == .combo && !hotkeyManager.comboModifierFlags1.isEmpty {
+                                Text(hotkeyManager.comboModifierFlags1.symbolString)
+                                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                                    .foregroundColor(.accentColor)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.white.opacity(0.1))
+                                    .cornerRadius(8)
                             } else if hotkeyManager.selectedHotkey1 != .none && hotkeyManager.selectedHotkey1 != .custom {
                                 Text(hotkeyManager.selectedHotkey1.displayName)
                                     .font(.system(size: 24, weight: .bold, design: .rounded))

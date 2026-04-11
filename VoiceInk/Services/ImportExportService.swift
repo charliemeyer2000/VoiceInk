@@ -11,6 +11,8 @@ struct GeneralSettings: Codable {
     let retryLastTranscriptionShortcut: KeyboardShortcuts.Shortcut?
     let selectedHotkey1RawValue: String?
     let selectedHotkey2RawValue: String?
+    let comboModifierFlags1RawValue: UInt?
+    let comboModifierFlags2RawValue: UInt?
     let launchAtLoginEnabled: Bool?
     let isMenuBarOnly: Bool?
     let recorderType: String?
@@ -104,6 +106,8 @@ class ImportExportService {
             retryLastTranscriptionShortcut: KeyboardShortcuts.getShortcut(for: .retryLastTranscription),
             selectedHotkey1RawValue: hotkeyManager.selectedHotkey1.rawValue,
             selectedHotkey2RawValue: hotkeyManager.selectedHotkey2.rawValue,
+            comboModifierFlags1RawValue: hotkeyManager.comboModifierFlags1.rawValue,
+            comboModifierFlags2RawValue: hotkeyManager.comboModifierFlags2.rawValue,
             launchAtLoginEnabled: LaunchAtLogin.isEnabled,
             isMenuBarOnly: menuBarManager.isMenuBarOnly,
             recorderType: recorderUIManager.recorderType,
@@ -288,6 +292,12 @@ class ImportExportService {
                         if let hotkeyRaw2 = general.selectedHotkey2RawValue,
                            let hotkey2 = HotkeyManager.HotkeyOption(rawValue: hotkeyRaw2) {
                             hotkeyManager.selectedHotkey2 = hotkey2
+                        }
+                        if let comboRaw1 = general.comboModifierFlags1RawValue {
+                            hotkeyManager.comboModifierFlags1 = NSEvent.ModifierFlags(rawValue: comboRaw1)
+                        }
+                        if let comboRaw2 = general.comboModifierFlags2RawValue {
+                            hotkeyManager.comboModifierFlags2 = NSEvent.ModifierFlags(rawValue: comboRaw2)
                         }
                         if let launch = general.launchAtLoginEnabled {
                             LaunchAtLogin.isEnabled = launch
