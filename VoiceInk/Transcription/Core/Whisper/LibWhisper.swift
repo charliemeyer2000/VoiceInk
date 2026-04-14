@@ -110,7 +110,6 @@ actor WhisperContext {
                 let audioSec = Float(samples.count) / 16000.0
                 logger.info("timings audio=\(audioSec, privacy: .public)s sample=\(t.sample_ms, privacy: .public)ms encode=\(t.encode_ms, privacy: .public)ms decode=\(t.decode_ms, privacy: .public)ms batchd=\(t.batchd_ms, privacy: .public)ms prompt=\(t.prompt_ms, privacy: .public)ms")
             }
-            whisper_print_timings(context)
         }
 
         languageCString = nil

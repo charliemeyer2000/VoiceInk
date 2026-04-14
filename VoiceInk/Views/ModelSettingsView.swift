@@ -7,6 +7,7 @@ struct ModelSettingsView: View {
     @AppStorage("IsVADEnabled") private var isVADEnabled = true
     @AppStorage("AppendTrailingSpace") private var appendTrailingSpace = true
     @AppStorage("PrewarmModelOnWake") private var prewarmModelOnWake = true
+    @AppStorage("KeepWhisperModelLoaded") private var keepWhisperModelLoaded = true
     @AppStorage("WhisperThreadCount") private var whisperThreadCount = 0
     @State private var customPrompt: String = ""
     @State private var isEditing: Bool = false
@@ -74,6 +75,14 @@ struct ModelSettingsView: View {
                     HStack(spacing: 4) {
                         Text("Prewarm model (Experimental)")
                         InfoTip("Turn this on if transcriptions with local models are taking longer than expected. Runs silent background transcription on app launch and wake to trigger optimization.")
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $keepWhisperModelLoaded) {
+                    HStack(spacing: 4) {
+                        Text("Keep model loaded in memory")
+                        InfoTip("Keeps the Whisper model resident between transcriptions so subsequent recordings start instantly. Turn off if you need to free RAM between dictations.")
                     }
                 }
                 .toggleStyle(.switch)
