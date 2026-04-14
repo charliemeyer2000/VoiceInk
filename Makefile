@@ -4,6 +4,15 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
+# Pin to the charliemeyer2000/whisper.cpp fork: stock upstream lacks the
+# multi-shape CoreML encoder dispatch (5s/10s/15s/30s variants), the FP16
+# variant output handling, and the macOS-only xcframework build script that
+# works around nix-darwin + Xcode 26 link issues. Bump WHISPER_CPP_REF when
+# new fork commits land.
+WHISPER_CPP_REPO := https://github.com/charliemeyer2000/whisper.cpp.git
+WHISPER_CPP_REF  := 2d2fec7f63154330f3be055a3513f0ee1025fb3b
+WHISPER_CPP_BUILD_SCRIPT := ./build-xcframework-macos.sh
+
 .PHONY: all clean whisper setup build local check healthcheck help dev run
 
 # Default target
@@ -26,13 +35,14 @@ healthcheck: check
 whisper:
 	@mkdir -p $(DEPS_DIR)
 	@if [ ! -d "$(FRAMEWORK_PATH)" ]; then \
-		echo "Building whisper.xcframework in $(DEPS_DIR)..."; \
+		echo "Building whisper.xcframework in $(DEPS_DIR) from $(WHISPER_CPP_REPO)@$(WHISPER_CPP_REF)..."; \
 		if [ ! -d "$(WHISPER_CPP_DIR)" ]; then \
-			git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_CPP_DIR); \
+			git clone $(WHISPER_CPP_REPO) $(WHISPER_CPP_DIR); \
 		else \
-			(cd $(WHISPER_CPP_DIR) && git pull); \
+			(cd $(WHISPER_CPP_DIR) && git fetch origin); \
 		fi; \
-		cd $(WHISPER_CPP_DIR) && ./build-xcframework.sh; \
+		(cd $(WHISPER_CPP_DIR) && git checkout $(WHISPER_CPP_REF)); \
+		cd $(WHISPER_CPP_DIR) && $(WHISPER_CPP_BUILD_SCRIPT); \
 	else \
 		echo "whisper.xcframework already built in $(DEPS_DIR), skipping build"; \
 	fi
