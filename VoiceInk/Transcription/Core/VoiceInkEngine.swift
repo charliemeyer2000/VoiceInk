@@ -256,8 +256,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // MARK: - Resource Cleanup
 
     func cleanupResources() async {
-        logger.notice("cleanupResources: releasing model resources")
-        await whisperModelManager.cleanupResources()
+        let keepLoaded = UserDefaults.standard.bool(forKey: "KeepWhisperModelLoaded")
+        logger.notice("cleanupResources: keepLoaded=\(keepLoaded, privacy: .public)")
+        if !keepLoaded {
+            await whisperModelManager.cleanupResources()
+        }
         await serviceRegistry.cleanup()
         logger.notice("cleanupResources: completed")
     }
