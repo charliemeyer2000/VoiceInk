@@ -14,13 +14,16 @@ import os
 // Thread model:
 //   - appendChunk(_:) is called from the CoreAudioRecorder audio thread.
 //     Only operation is memcpy'ing Int16 bytes into the shared buffer under an
-//     OSAllocatedUnfairLock. No allocation on the audio thread (buffer is
-//     pre-grown in ~1s increments; reserveCapacity calls happen off-thread).
+//     OSAllocatedUnfairLock. Swift arrays grow geometrically, so
+//     reserveCapacity on the hot path only triggers a real heap allocation
+//     for the first few seconds of a recording — after that the buffer
+//     capacity exceeds any further chunk and appends are amortised O(1).
 //   - The internal serial DispatchQueue (qos: .utility) runs the snapshot +
 //     conversion + await whisperContext.speculativeTranscribe.
 //   - stopAndDrain() is called from the MainActor (VoiceInkEngine.toggleRecord)
-//     before the final commit transcribe. It flips the stop flag, then the
-//     abort flag, then awaits the serial queue drain.
+//     before the final commit transcribe. It flips stop, flips abort, then
+//     awaits the in-flight Task.detached directly so whisper.cpp is truly
+//     done reading abortFlag before we return.
 final class SpeculativeTranscriber {
 
     // Shape boundaries matching whisper.cpp multi-shape CoreML variants
@@ -48,6 +51,11 @@ final class SpeculativeTranscriber {
     )
     private var inFlight: Bool = false
     private var lastDispatchedSampleCount: Int = 0
+    // Handle to the in-flight Task.detached. stopAndDrain awaits this directly
+    // — the serialQueue barrier alone doesn't block on the Task's actor hop
+    // into WhisperContext, so awaiting the queue is not enough to guarantee
+    // whisper.cpp has stopped dereferencing abortFlag.
+    private var inFlightTask: Task<Void, Never>? = nil
 
     // Stop flag: set on main actor before flipping abort. Checked on serial
     // queue at dispatch time so no new pass launches after stop.
@@ -77,6 +85,7 @@ final class SpeculativeTranscriber {
         abortFlag.pointee = false
         serialQueue.async { [weak self] in
             self?.inFlight = false
+            self?.inFlightTask = nil
             self?.lastDispatchedSampleCount = 0
         }
         logger.info("speculative: start — buffer reset")
@@ -108,23 +117,31 @@ final class SpeculativeTranscriber {
     }
 
     // Called on MainActor before the commit transcribe. Waits until all
-    // in-flight speculative work has unwound so the whisper actor is free.
+    // in-flight speculative work has unwound so the whisper actor is free
+    // AND whisper.cpp has stopped reading abortFlag via its C abort callback
+    // (otherwise deinit could free the pointer out from under a still-running
+    // whisper_full).
     func stopAndDrain() async {
         stopped.withLock { $0 = true }
         abortFlag.pointee = true
         logger.info("speculative: stopAndDrain — stopped=true, abort=true")
 
-        // Barrier block — returns once the serial queue has drained past any
-        // already-dispatched work (including the await on speculativeTranscribe).
-        await withCheckedContinuation { cont in
-            serialQueue.async {
-                cont.resume()
+        // Snapshot the current in-flight Task on the serial queue so we see
+        // whatever evaluateAndDispatch last stored. The queue hop also acts
+        // as a memory barrier with evaluateAndDispatch's writes.
+        let task: Task<Void, Never>? = await withCheckedContinuation { cont in
+            serialQueue.async { [weak self] in
+                cont.resume(returning: self?.inFlightTask)
             }
         }
 
-        // If an in-flight whisper_full saw abort=true, the inFlight flag will
-        // already have been cleared by the completion of its serialQueue block.
-        // Reset abort so the next recording session starts clean.
+        // Await the detached Task itself. This is what actually guarantees
+        // the `await contextRef.speculativeTranscribe(...)` has returned and
+        // whisper.cpp has stopped dereferencing abortFlag. The serial queue
+        // alone doesn't block on the Task's actor hop into WhisperContext.
+        await task?.value
+
+        // Now safe to reset — no whisper_full can still be reading the flag.
         abortFlag.pointee = false
         logger.info("speculative: drained, abort reset")
     }
@@ -162,13 +179,16 @@ final class SpeculativeTranscriber {
         // LocalTranscriptionService.readAudioSamples does scalar-ly from WAV.
         let floatSamples = Self.convertInt16ToFloat(samples)
 
-        // Launch the transcribe on the whisper actor. We reschedule the
-        // completion back onto serialQueue so inFlight is only cleared under
-        // the queue's serial guarantee.
+        // Launch the transcribe on the whisper actor. The Task handle is
+        // stored in inFlightTask so stopAndDrain can await it — the serial
+        // queue alone does not block on the Task's actor hop, and whisper.cpp
+        // reads abortFlag via its C callback for the entire duration of this
+        // Task, so we must keep self (and thus abortFlag) alive until it
+        // completes.
         let abortPtr = self.abortFlag
         let contextRef = self.whisperContext
         let logger = self.logger
-        Task.detached { [weak self] in
+        let task = Task.detached { [weak self] in
             let success = await contextRef.speculativeTranscribe(samples: floatSamples, abortFlag: abortPtr)
             let elapsedMs = Date().timeIntervalSince(startedAt) * 1000
             if success {
@@ -180,9 +200,11 @@ final class SpeculativeTranscriber {
             }
             self?.serialQueue.async {
                 self?.inFlight = false
+                self?.inFlightTask = nil
                 self?.evaluateAndDispatch()
             }
         }
+        inFlightTask = task
     }
 
     // Snap sampleCount down to the nearest variant boundary. Returns nil when
