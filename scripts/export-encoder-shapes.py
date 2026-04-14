@@ -45,9 +45,9 @@ import coremltools as ct
 import torch
 import torch.nn.functional as F
 
-# whisper's MultiHeadAttention.use_sdpa is toggled before importing whisper.model
-# to match the pattern in whisper.cpp/models/convert-whisper-to-coreml.py and
-# avoid PyTorch SDPA behavior differences that break tracing with torch 2.5.
+# MultiHeadAttention.use_sdpa is a class attribute checked at forward-time,
+# so toggling it before load_model() is sufficient to avoid torch 2.5 SDPA
+# tracing issues. This mirrors whisper.cpp/models/convert-whisper-to-coreml.py.
 import whisper.model  # noqa: E402
 
 whisper.model.MultiHeadAttention.use_sdpa = False
@@ -120,11 +120,19 @@ def convert_shape(
     )
 
     if quantize:
-        from coremltools.models.neural_network.quantization_utils import (
-            quantize_weights,
+        # coremltools.models.neural_network.quantization_utils.quantize_weights
+        # only operates on legacy NeuralNetwork specs; it silently no-ops on
+        # mlprogram. Use coremltools.optimize.coreml for mlprogram models.
+        from coremltools.optimize.coreml import (
+            OpLinearQuantizerConfig,
+            OptimizationConfig,
+            linear_quantize_weights,
         )
 
-        ct_model = quantize_weights(ct_model, nbits=16)
+        config = OptimizationConfig(
+            global_config=OpLinearQuantizerConfig(mode="linear_symmetric", dtype="float16")
+        )
+        ct_model = linear_quantize_weights(ct_model, config)
 
     return ct_model
 
