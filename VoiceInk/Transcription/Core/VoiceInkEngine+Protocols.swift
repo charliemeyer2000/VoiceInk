@@ -24,7 +24,7 @@ extension VoiceInkEngine: PowerModeStateProvider {
     }
 
     func cleanupModelResources() async {
-        await cleanupResources()
+        await cleanupResources(forceUnload: true)
     }
 
     func loadModel(_ model: WhisperModel) async throws {
