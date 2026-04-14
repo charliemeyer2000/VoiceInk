@@ -117,6 +117,30 @@ class WhisperModelManager: ObservableObject {
 
             isModelLoaded = true
             loadedLocalModel = model
+
+            // Fire-and-forget encoder prewarm: compiles the CoreML graph + primes
+            // the ANE so the first user dictation doesn't pay cold-start cost.
+            // The actor serializes this against any user-initiated transcribe —
+            // worst case, the user dictates immediately and waits on the same
+            // cold-start they would have paid anyway.
+            //
+            // Honour the existing PrewarmModelOnWake toggle (shared with
+            // ModelPrewarmService). Skip models without a CoreML encoder on
+            // disk — quantized models (q5/q8) never ship one, and the whisper
+            // Metal/CPU path has negligible cold-start. We check the filesystem
+            // directly rather than `model.isCoreMLDownloaded`, which is only
+            // populated during the download flow; on app restart, models are
+            // reloaded via `loadAvailableModels()` and the flag is always nil.
+            let prewarmEnabled = UserDefaults.standard.bool(forKey: "PrewarmModelOnWake")
+            let coreMLPath = model.coreMLEncoderDirectoryName.map {
+                modelsDirectory.appendingPathComponent($0).path
+            }
+            let hasCoreMLEncoder = coreMLPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+            if prewarmEnabled, hasCoreMLEncoder, let context = whisperContext {
+                Task.detached(priority: .utility) {
+                    await context.prewarm()
+                }
+            }
         } catch {
             throw VoiceInkEngineError.modelLoadFailed
         }
