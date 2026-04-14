@@ -82,11 +82,15 @@ actor WhisperContext {
         // which is what params.audio_ctx controls. When the shape-specialised
         // .mlmodelc variants (5s/10s/15s/30s) are bundled next to the encoder,
         // whisper.cpp uses this value as the upper bound to select the smallest
-        // variant that fits. hparams.n_audio_ctx for large-v3-turbo is 1500.
-        // Leaving it at 0 (the stock default) forces the 30s variant every
-        // time regardless of actual audio length.
+        // variant that fits. Leaving it at 0 (the stock default) forces the
+        // 30s variant every time regardless of actual audio length.
+        //
+        // Cap at the model's own n_audio_ctx (1500 for all standard whisper
+        // models — tiny through large-v3-turbo — but queried rather than
+        // hardcoded in case a non-standard model is ever loaded).
         let melFrames = samples.count / 160
-        let audioCtxHint = min((melFrames + 1) / 2, 1500)
+        let modelMaxAudioCtx = Int(whisper_model_n_audio_ctx(context))
+        let audioCtxHint = min((melFrames + 1) / 2, modelMaxAudioCtx)
         if audioCtxHint > 0 {
             params.audio_ctx = Int32(audioCtxHint)
         }
