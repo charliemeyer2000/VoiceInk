@@ -103,10 +103,18 @@ actor WhisperContext {
                 success = false
             }
         }
-        
+
+        if success {
+            let t = whisper_get_timings(context)
+            if let t = t?.pointee {
+                let audioSec = Float(samples.count) / 16000.0
+                logger.info("timings audio=\(audioSec, privacy: .public)s sample=\(t.sample_ms, privacy: .public)ms encode=\(t.encode_ms, privacy: .public)ms decode=\(t.decode_ms, privacy: .public)ms batchd=\(t.batchd_ms, privacy: .public)ms prompt=\(t.prompt_ms, privacy: .public)ms")
+            }
+        }
+
         languageCString = nil
         promptCString = nil
-        
+
         return success
     }
 
