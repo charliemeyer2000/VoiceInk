@@ -4,6 +4,20 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
+# Pin to the charliemeyer2000/whisper.cpp fork: stock upstream lacks the
+# multi-shape CoreML encoder dispatch (5s/10s/15s/30s variants), the FP16
+# variant output handling, and the macOS-only xcframework build script that
+# works around nix-darwin + Xcode 26 link issues. Bump WHISPER_CPP_REF when
+# new fork commits land.
+WHISPER_CPP_REPO := https://github.com/charliemeyer2000/whisper.cpp.git
+WHISPER_CPP_REF  := 2d2fec7f63154330f3be055a3513f0ee1025fb3b
+WHISPER_CPP_BUILD_SCRIPT := ./build-xcframework-macos.sh
+# Stamp file records which WHISPER_CPP_REF produced the current xcframework.
+# Used to invalidate a stale build when WHISPER_CPP_REF is bumped — without
+# it, an existing xcframework from an older ref (or from stock upstream)
+# would be silently kept.
+WHISPER_CPP_STAMP := $(WHISPER_CPP_DIR)/build-apple/.whisper_cpp_ref
+
 .PHONY: all clean whisper setup build local check healthcheck help dev run
 
 # Default target
@@ -25,16 +39,26 @@ healthcheck: check
 # Build process
 whisper:
 	@mkdir -p $(DEPS_DIR)
-	@if [ ! -d "$(FRAMEWORK_PATH)" ]; then \
-		echo "Building whisper.xcframework in $(DEPS_DIR)..."; \
-		if [ ! -d "$(WHISPER_CPP_DIR)" ]; then \
-			git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_CPP_DIR); \
-		else \
-			(cd $(WHISPER_CPP_DIR) && git pull); \
-		fi; \
-		cd $(WHISPER_CPP_DIR) && ./build-xcframework.sh; \
+	@set -e; \
+	CURRENT_REF=""; \
+	if [ -f "$(WHISPER_CPP_STAMP)" ]; then CURRENT_REF=$$(cat "$(WHISPER_CPP_STAMP)"); fi; \
+	if [ -d "$(FRAMEWORK_PATH)" ] && [ "$$CURRENT_REF" = "$(WHISPER_CPP_REF)" ]; then \
+		echo "whisper.xcframework already built at ref $(WHISPER_CPP_REF), skipping build"; \
 	else \
-		echo "whisper.xcframework already built in $(DEPS_DIR), skipping build"; \
+		if [ -d "$(FRAMEWORK_PATH)" ]; then \
+			echo "whisper.xcframework ref mismatch (have '$$CURRENT_REF', want '$(WHISPER_CPP_REF)'), rebuilding"; \
+			rm -rf "$(WHISPER_CPP_DIR)/build-apple" "$(WHISPER_CPP_STAMP)"; \
+		fi; \
+		echo "Building whisper.xcframework in $(DEPS_DIR) from $(WHISPER_CPP_REPO)@$(WHISPER_CPP_REF)..."; \
+		if [ ! -d "$(WHISPER_CPP_DIR)/.git" ]; then \
+			rm -rf "$(WHISPER_CPP_DIR)"; \
+			git clone $(WHISPER_CPP_REPO) $(WHISPER_CPP_DIR); \
+		else \
+			(cd $(WHISPER_CPP_DIR) && git remote set-url origin $(WHISPER_CPP_REPO) && git fetch origin); \
+		fi; \
+		(cd $(WHISPER_CPP_DIR) && git checkout $(WHISPER_CPP_REF)); \
+		(cd $(WHISPER_CPP_DIR) && $(WHISPER_CPP_BUILD_SCRIPT)); \
+		echo "$(WHISPER_CPP_REF)" > "$(WHISPER_CPP_STAMP)"; \
 	fi
 
 setup: whisper
