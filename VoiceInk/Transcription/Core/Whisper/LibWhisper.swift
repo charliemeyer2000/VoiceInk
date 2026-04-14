@@ -202,11 +202,18 @@ actor WhisperContext {
 
         whisper_reset_timings(context)
 
+        var prewarmFailed = false
         silence.withUnsafeBufferPointer { buf in
-            _ = whisper_full(context, params, buf.baseAddress, Int32(buf.count))
+            if whisper_full(context, params, buf.baseAddress, Int32(buf.count)) != 0 {
+                prewarmFailed = true
+            }
         }
 
         let elapsedMs = Date().timeIntervalSince(startedAt) * 1000
+        if prewarmFailed {
+            logger.error("prewarm whisper_full failed after \(elapsedMs, privacy: .public)ms")
+            return
+        }
         if let t = whisper_get_timings(context)?.pointee {
             logger.info("prewarm done elapsed=\(elapsedMs, privacy: .public)ms encode=\(t.encode_ms, privacy: .public)ms decode=\(t.decode_ms, privacy: .public)ms audio_ctx=\(audioCtxHint, privacy: .public)")
         } else {
