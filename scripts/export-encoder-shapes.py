@@ -191,6 +191,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Quoted shell args skip tilde expansion; handle it explicitly.
+    args.output_dir = args.output_dir.expanduser()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading whisper model: {args.model}")
