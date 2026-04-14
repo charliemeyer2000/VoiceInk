@@ -117,6 +117,17 @@ class WhisperModelManager: ObservableObject {
 
             isModelLoaded = true
             loadedLocalModel = model
+
+            // Fire-and-forget encoder prewarm: compiles the CoreML graph + primes
+            // the ANE so the first user dictation doesn't pay cold-start cost.
+            // The actor will serialize this against any user-initiated transcribe
+            // — in the worst case the user dictates immediately and waits on
+            // the same cold-start they would have paid anyway.
+            if let context = whisperContext {
+                Task.detached(priority: .utility) {
+                    await context.prewarm()
+                }
+            }
         } catch {
             throw VoiceInkEngineError.modelLoadFailed
         }

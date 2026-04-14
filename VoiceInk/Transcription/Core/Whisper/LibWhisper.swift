@@ -150,12 +150,68 @@ actor WhisperContext {
     static func createContext(path: String) async throws -> WhisperContext {
         let whisperContext = WhisperContext()
         try await whisperContext.initializeModel(path: path)
-        
+
         // Load VAD model from bundle resources
         let vadModelPath = await VADModelManager.shared.getModelPath()
         await whisperContext.setVADModelPath(vadModelPath)
-        
+
         return whisperContext
+    }
+
+    // Run a silent forward pass to compile the CoreML encoder graph and prime
+    // the ANE before the first user dictation. Without this, the very first
+    // whisper_full call after app launch pays a one-time cold-start cost
+    // (CoreML graph compilation + buffer allocation) that can add 200–500ms
+    // of perceived latency. We warm the 5s multi-shape variant specifically
+    // since it covers the common short-dictation case; longer audio still
+    // cold-starts its variant lazily on first use.
+    //
+    // Silence is fine — we only care about traversing the encoder path, not
+    // producing meaningful output. Decode runs too (whisper_full is the only
+    // API that respects params.audio_ctx for variant selection), but on
+    // silence it exits near-immediately.
+    func prewarm() {
+        guard let context = context else { return }
+
+        let startedAt = Date()
+        let audioSeconds = 5
+        let sampleCount = audioSeconds * 16000
+        let silence = [Float](repeating: 0.0, count: sampleCount)
+
+        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        params.print_realtime = false
+        params.print_progress = false
+        params.print_timestamps = false
+        params.print_special = false
+        params.translate = false
+        params.n_threads = 1
+        params.no_context = true
+        params.single_segment = true
+        params.suppress_blank = true
+        params.suppress_nst = true
+        params.language = nil
+        params.initial_prompt = nil
+        params.vad = false
+
+        let melFrames = sampleCount / 160
+        let modelMaxAudioCtx = Int(whisper_model_n_audio_ctx(context))
+        let audioCtxHint = min((melFrames + 1) / 2, modelMaxAudioCtx)
+        if audioCtxHint > 0 {
+            params.audio_ctx = Int32(audioCtxHint)
+        }
+
+        whisper_reset_timings(context)
+
+        silence.withUnsafeBufferPointer { buf in
+            _ = whisper_full(context, params, buf.baseAddress, Int32(buf.count))
+        }
+
+        let elapsedMs = Date().timeIntervalSince(startedAt) * 1000
+        if let t = whisper_get_timings(context)?.pointee {
+            logger.info("prewarm done elapsed=\(elapsedMs, privacy: .public)ms encode=\(t.encode_ms, privacy: .public)ms decode=\(t.decode_ms, privacy: .public)ms audio_ctx=\(audioCtxHint, privacy: .public)")
+        } else {
+            logger.info("prewarm done elapsed=\(elapsedMs, privacy: .public)ms audio_ctx=\(audioCtxHint, privacy: .public)")
+        }
     }
     
     private func initializeModel(path: String) throws {
