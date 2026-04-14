@@ -100,8 +100,15 @@ class SlicedEncoder(torch.nn.Module):
 def convert_shape(
     whisper_model,
     n_mel_frames: int,
-    quantize: bool,
 ) -> ct.models.MLModel:
+    # SlicedEncoder relies on n_mel_frames // 2 matching the conv2 output time
+    # dimension. That arithmetic only holds for even n_mel_frames (conv2 is
+    # kernel=3, stride=2, padding=1 -> floor((N-1)/2)+1, which equals N/2
+    # iff N is even). All four shapes in SHAPES are even; guard the
+    # assumption so a future addition fails loudly instead of producing a
+    # positional-embedding shape mismatch at trace time.
+    assert n_mel_frames % 2 == 0, f"n_mel_frames must be even, got {n_mel_frames}"
+
     encoder = SlicedEncoder(whisper_model.encoder, n_mel_frames).eval()
     n_mels = whisper_model.dims.n_mels
     input_shape = (1, n_mels, n_mel_frames)
@@ -110,31 +117,19 @@ def convert_shape(
     with torch.no_grad():
         traced = torch.jit.trace(encoder, example)
 
-    ct_model = ct.convert(
+    # mlprogram defaults to compute_precision=FLOAT16, which stores weights
+    # as FP16 — ~half the disk footprint of FP32 and what ANE expects anyway.
+    # Being explicit here makes that contract visible rather than relying on
+    # the coremltools default.
+    return ct.convert(
         traced,
         convert_to="mlprogram",
         inputs=[ct.TensorType(name="logmel_data", shape=input_shape)],
         outputs=[ct.TensorType(name="output")],
         compute_units=ct.ComputeUnit.CPU_AND_NE,
+        compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.macOS14,
     )
-
-    if quantize:
-        # coremltools.models.neural_network.quantization_utils.quantize_weights
-        # only operates on legacy NeuralNetwork specs; it silently no-ops on
-        # mlprogram. Use coremltools.optimize.coreml for mlprogram models.
-        from coremltools.optimize.coreml import (
-            OpLinearQuantizerConfig,
-            OptimizationConfig,
-            linear_quantize_weights,
-        )
-
-        config = OptimizationConfig(
-            global_config=OpLinearQuantizerConfig(mode="linear_symmetric", dtype="float16")
-        )
-        ct_model = linear_quantize_weights(ct_model, config)
-
-    return ct_model
 
 
 def compile_mlmodelc(mlpackage: Path) -> Path | None:
@@ -194,11 +189,6 @@ def main() -> int:
         default=True,
         help="skip the xcrun coremlcompiler step (keep only .mlpackage)",
     )
-    parser.add_argument(
-        "--quantize",
-        action="store_true",
-        help="quantize weights to FP16 (halves disk footprint, small accuracy impact)",
-    )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +204,7 @@ def main() -> int:
     for shape_name in args.shapes:
         n_mel = SHAPES[shape_name]
         print(f"\nExporting {shape_name} encoder ({n_mel} mel frames -> {n_mel // 2} audio ctx)")
-        ct_model = convert_shape(model, n_mel, args.quantize)
+        ct_model = convert_shape(model, n_mel)
 
         mlpackage = args.output_dir / f"ggml-{args.model}-encoder-{shape_name}.mlpackage"
         ct_model.save(str(mlpackage))
