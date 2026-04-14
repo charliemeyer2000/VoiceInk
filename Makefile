@@ -39,14 +39,15 @@ healthcheck: check
 # Build process
 whisper:
 	@mkdir -p $(DEPS_DIR)
-	@CURRENT_REF=""; \
+	@set -e; \
+	CURRENT_REF=""; \
 	if [ -f "$(WHISPER_CPP_STAMP)" ]; then CURRENT_REF=$$(cat "$(WHISPER_CPP_STAMP)"); fi; \
 	if [ -d "$(FRAMEWORK_PATH)" ] && [ "$$CURRENT_REF" = "$(WHISPER_CPP_REF)" ]; then \
 		echo "whisper.xcframework already built at ref $(WHISPER_CPP_REF), skipping build"; \
 	else \
 		if [ -d "$(FRAMEWORK_PATH)" ]; then \
 			echo "whisper.xcframework ref mismatch (have '$$CURRENT_REF', want '$(WHISPER_CPP_REF)'), rebuilding"; \
-			rm -rf "$(FRAMEWORK_PATH)" "$(WHISPER_CPP_STAMP)"; \
+			rm -rf "$(WHISPER_CPP_DIR)/build-apple" "$(WHISPER_CPP_STAMP)"; \
 		fi; \
 		echo "Building whisper.xcframework in $(DEPS_DIR) from $(WHISPER_CPP_REPO)@$(WHISPER_CPP_REF)..."; \
 		if [ ! -d "$(WHISPER_CPP_DIR)/.git" ]; then \
