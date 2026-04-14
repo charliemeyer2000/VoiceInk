@@ -16,6 +16,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
     var recordedFile: URL? = nil
     let recordingsDirectory: URL
 
+    // Non-nil while a local-model recording is underway. Runs silent
+    // whisper_full passes in the background to keep the CoreML encoder
+    // graph + ANE + Metal KV-cache warm, so the commit transcribe after
+    // the user stops doesn't pay cold-start latency.
+    var speculativeTranscriber: SpeculativeTranscriber?
+
     // Injected managers
     let whisperModelManager: WhisperModelManager
     let transcriptionModelManager: TranscriptionModelManager
@@ -84,6 +90,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if recordingState == .recording {
             partialTranscript = ""
             recordingState = .transcribing
+            // Drain any in-flight speculative whisper_full pass BEFORE the
+            // audio recorder is stopped and the commit transcribe fires.
+            // This unwinds the speculative call via its ggml abort_callback
+            // so the WhisperContext actor is free for the commit call.
+            if let spec = speculativeTranscriber {
+                await spec.stopAndDrain()
+                speculativeTranscriber = nil
+            }
             await recorder.stopRecording()
 
             if let recordedFile {
@@ -173,8 +187,34 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                     }
                                     for chunk in buffered { realCallback(chunk) }
                                 } else {
-                                    self.recorder.onAudioChunk = nil
-                                    pendingChunks.withLock { $0.removeAll() }
+                                    // Local-model path: no realtime streaming service. If
+                                    // the whisper context is already loaded (prewarm done),
+                                    // tap chunks into SpeculativeTranscriber so the encoder
+                                    // stays warm through recording.
+                                    let specEnabled = UserDefaults.standard.bool(forKey: "SpeculativeTranscribeEnabled")
+                                    if specEnabled, model.provider == .local,
+                                       let loadedContext = self.whisperModelManager.whisperContext {
+                                        let spec = SpeculativeTranscriber(whisperContext: loadedContext)
+                                        self.speculativeTranscriber = spec
+                                        spec.start()
+                                        self.recorder.onAudioChunk = { data in
+                                            spec.appendChunk(data)
+                                        }
+                                        // Drain pre-start buffer into the speculative transcriber too.
+                                        let buffered = pendingChunks.withLock { chunks -> [Data] in
+                                            let result = chunks
+                                            chunks.removeAll()
+                                            return result
+                                        }
+                                        for chunk in buffered { spec.appendChunk(chunk) }
+                                        self.logger.info("speculative: attached (model=\(model.name, privacy: .public))")
+                                    } else {
+                                        self.recorder.onAudioChunk = nil
+                                        pendingChunks.withLock { $0.removeAll() }
+                                        if specEnabled, model.provider == .local {
+                                            self.logger.info("speculative: skipped — whisper context not yet loaded")
+                                        }
+                                    }
                                 }
                             }
 

@@ -54,6 +54,12 @@ enum AppDefaults {
             // Performance (0 = auto-detect optimal thread count)
             "WhisperThreadCount": 0,
 
+            // Run background speculative transcribes during recording to keep
+            // the CoreML encoder graph + ANE + Metal KV-cache warm so the
+            // final commit transcribe is snappier. Off for non-local models
+            // (no whisperContext to warm) regardless of this flag.
+            "SpeculativeTranscribeEnabled": true,
+
         ])
     }
 }
