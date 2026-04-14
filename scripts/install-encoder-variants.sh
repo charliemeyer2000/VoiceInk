@@ -25,6 +25,12 @@ MODELS_DIR="${VOICEINK_MODELS_DIR:-${DEFAULT_MODELS_DIR}}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 EXPORTER="${SCRIPT_DIR}/export-encoder-shapes.py"
 
+if ! command -v uv >/dev/null 2>&1; then
+    echo "error: uv not found on PATH" >&2
+    echo "install via https://docs.astral.sh/uv/getting-started/installation/ and re-run." >&2
+    exit 1
+fi
+
 if [[ ! -d "${MODELS_DIR}" ]]; then
     echo "error: models directory not found at:" >&2
     echo "  ${MODELS_DIR}" >&2
@@ -64,6 +70,7 @@ done
 
 echo
 echo "==> Installed variants:"
+missing=0
 for shape in 5s 10s 15s 30s; do
     variant="${MODELS_DIR}/ggml-${MODEL}-encoder-${shape}.mlmodelc"
     if [[ -d "${variant}" ]]; then
@@ -71,8 +78,16 @@ for shape in 5s 10s 15s 30s; do
         echo "    ${variant##*/}  (${size})"
     else
         echo "    MISSING: ${variant##*/}" >&2
+        missing=$((missing + 1))
     fi
 done
+
+if (( missing > 0 )); then
+    echo >&2
+    echo "error: ${missing} variant(s) missing — export likely failed partway through." >&2
+    echo "check the exporter output above for errors and re-run." >&2
+    exit 1
+fi
 
 echo
 echo "Done. Relaunch VoiceInk so WhisperContext reloads the encoder."
