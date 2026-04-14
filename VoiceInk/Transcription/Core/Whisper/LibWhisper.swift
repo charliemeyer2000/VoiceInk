@@ -76,6 +76,23 @@ actor WhisperContext {
         params.single_segment = true
         params.temperature = 0.2
 
+        // Tight audio_ctx hint drives multi-shape CoreML encoder dispatch:
+        // mel_frames = samples / 160 (whisper hop=160 @ 16kHz -> 100 frames/s).
+        // After the encoder's stride-2 conv2, the attention time dim is mel/2,
+        // which is what params.audio_ctx controls. When the shape-specialised
+        // .mlmodelc variants (5s/10s/15s/30s) are bundled next to the encoder,
+        // whisper.cpp uses this value as the upper bound to select the smallest
+        // variant that fits. hparams.n_audio_ctx for large-v3-turbo is 1500.
+        // Leaving it at 0 (the stock default) forces the 30s variant every
+        // time regardless of actual audio length.
+        let melFrames = samples.count / 160
+        let audioCtxHint = min((melFrames + 1) / 2, 1500)
+        if audioCtxHint > 0 {
+            params.audio_ctx = Int32(audioCtxHint)
+        }
+        let audioSec = Float(samples.count) / 16000.0
+        logger.info("Transcribing audio=\(audioSec, privacy: .public)s samples=\(samples.count, privacy: .public) mel_frames=\(melFrames, privacy: .public) audio_ctx_hint=\(audioCtxHint, privacy: .public)")
+
         whisper_reset_timings(context)
         
         // Configure VAD if enabled by user and model is available
@@ -107,7 +124,6 @@ actor WhisperContext {
         if success {
             let t = whisper_get_timings(context)
             if let t = t?.pointee {
-                let audioSec = Float(samples.count) / 16000.0
                 logger.info("timings audio=\(audioSec, privacy: .public)s sample=\(t.sample_ms, privacy: .public)ms encode=\(t.encode_ms, privacy: .public)ms decode=\(t.decode_ms, privacy: .public)ms batchd=\(t.batchd_ms, privacy: .public)ms prompt=\(t.prompt_ms, privacy: .public)ms")
             }
         }
