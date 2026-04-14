@@ -28,7 +28,7 @@ actor WhisperContext {
         }
     }
 
-    func fullTranscribe(samples: [Float]) -> Bool {
+    func fullTranscribe(samples: [Float], abortFlag: UnsafeMutablePointer<Bool>? = nil) -> Bool {
         guard let context = context else { return false }
 
         let threadSetting = UserDefaults.standard.integer(forKey: "WhisperThreadCount")
@@ -75,6 +75,12 @@ actor WhisperContext {
         params.no_context = true
         params.single_segment = true
         params.temperature = 0.2
+        // whisper_full_default_params leaves greedy.best_of=5 regardless of
+        // strategy — i.e. the "greedy" path silently runs 5 decoding candidates
+        // and picks the best-scoring one. Force true greedy (single candidate)
+        // for ~5x less decode work. No measurable quality impact on typical
+        // short dictations.
+        params.greedy.best_of = 1
 
         // Tight audio_ctx hint drives multi-shape CoreML encoder dispatch:
         // mel_frames = samples / 160 (whisper hop=160 @ 16kHz -> 100 frames/s).
@@ -116,11 +122,25 @@ actor WhisperContext {
         } else {
             params.vad = false
         }
-        
+
+        // Cooperative cancellation for speculative passes: whisper.cpp checks
+        // abort_callback between every ggml compute step. A non-nil abortFlag
+        // wires the shared Bool* into the C struct; flipping *abortFlag=true
+        // from Swift unwinds the in-flight compute within one ggml step.
+        if let abortFlag = abortFlag {
+            params.abort_callback = whisperAbortCallbackTrampoline
+            params.abort_callback_user_data = UnsafeMutableRawPointer(abortFlag)
+        }
+
         var success = true
         samples.withUnsafeBufferPointer { samplesBuffer in
             if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
-                logger.error("❌ Failed to run whisper_full. VAD enabled: \(params.vad, privacy: .public)")
+                // Aborted runs also return non-zero — distinguish by checking the flag.
+                if let abortFlag = abortFlag, abortFlag.pointee {
+                    logger.info("whisper_full aborted by caller (speculative pass)")
+                } else {
+                    logger.error("❌ Failed to run whisper_full. VAD enabled: \(params.vad, privacy: .public)")
+                }
                 success = false
             }
         }
@@ -136,6 +156,15 @@ actor WhisperContext {
         promptCString = nil
 
         return success
+    }
+
+    // Speculative background transcribe used during recording to keep the
+    // CoreML encoder graph, Metal KV-cache, and ANE residency hot so the
+    // final commit transcribe (after the user stops) runs on already-warm
+    // state. Output is discarded — only hardware/graph warmth transfers.
+    // abortFlag must outlive this call; caller flips it to true to cancel.
+    func speculativeTranscribe(samples: [Float], abortFlag: UnsafeMutablePointer<Bool>) -> Bool {
+        return fullTranscribe(samples: samples, abortFlag: abortFlag)
     }
 
     func getTranscription() -> String {
@@ -192,6 +221,10 @@ actor WhisperContext {
         params.language = nil
         params.initial_prompt = nil
         params.vad = false
+        // Match production decode shape — prewarm must mirror the real
+        // fullTranscribe params or the compiled graph / KV-cache sizing
+        // won't cover the first real call.
+        params.greedy.best_of = 1
 
         let melFrames = sampleCount / 160
         let modelMaxAudioCtx = Int(whisper_model_n_audio_ctx(context))
@@ -258,6 +291,14 @@ actor WhisperContext {
     func setPrompt(_ prompt: String?) {
         self.prompt = prompt
     }
+}
+
+// @convention(c) trampoline for ggml_abort_callback. Dereferences the shared
+// Bool* user_data; returning true aborts the in-flight whisper_full / ggml
+// compute at the next step boundary.
+fileprivate let whisperAbortCallbackTrampoline: @convention(c) (UnsafeMutableRawPointer?) -> Bool = { userData in
+    guard let userData = userData else { return false }
+    return userData.assumingMemoryBound(to: Bool.self).pointee
 }
 
 fileprivate func cpuCount() -> Int {
