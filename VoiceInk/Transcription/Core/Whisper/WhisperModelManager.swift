@@ -125,12 +125,18 @@ class WhisperModelManager: ObservableObject {
             // cold-start they would have paid anyway.
             //
             // Honour the existing PrewarmModelOnWake toggle (shared with
-            // ModelPrewarmService) — default is true to match the AppStorage
-            // default in ModelSettingsView. Skip models without a CoreML encoder
-            // (notably q5/q8 quantized models) since there's no ANE graph to
-            // compile; the encoder runs on Metal/CPU where cold-start is small.
-            let prewarmEnabled = (UserDefaults.standard.object(forKey: "PrewarmModelOnWake") as? Bool) ?? true
-            if prewarmEnabled, model.isCoreMLDownloaded, let context = whisperContext {
+            // ModelPrewarmService). Skip models without a CoreML encoder on
+            // disk — quantized models (q5/q8) never ship one, and the whisper
+            // Metal/CPU path has negligible cold-start. We check the filesystem
+            // directly rather than `model.isCoreMLDownloaded`, which is only
+            // populated during the download flow; on app restart, models are
+            // reloaded via `loadAvailableModels()` and the flag is always nil.
+            let prewarmEnabled = UserDefaults.standard.bool(forKey: "PrewarmModelOnWake")
+            let coreMLPath = model.coreMLEncoderDirectoryName.map {
+                modelsDirectory.appendingPathComponent($0).path
+            }
+            let hasCoreMLEncoder = coreMLPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+            if prewarmEnabled, hasCoreMLEncoder, let context = whisperContext {
                 Task.detached(priority: .utility) {
                     await context.prewarm()
                 }
