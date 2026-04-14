@@ -16,4 +16,15 @@ uv run scripts/export-encoder-shapes.py \
 
 Outputs both `.mlpackage` (intermediate) and `.mlmodelc` (runtime-ready, if `xcrun` is available) for each shape. The `.mlmodelc` files are what the app loads at runtime.
 
-Runtime wiring (encoder selection by audio length) lands in a follow-up PR.
+## `install-encoder-variants.sh`
+
+One-shot wrapper that exports the variants and drops them directly into VoiceInk's on-disk models directory (`~/Library/Application Support/com.prakashjoshipax.VoiceInk/WhisperModels/`). Prerequisite: the target model (`large-v3-turbo` by default) must already be downloaded via VoiceInk's model manager — variants are siblings of the stock encoder.
+
+```bash
+scripts/install-encoder-variants.sh              # defaults to large-v3-turbo
+scripts/install-encoder-variants.sh large-v2     # or any other downloaded model
+```
+
+Override the destination via `VOICEINK_MODELS_DIR=/path/to/WhisperModels` if the bundle id or sandbox path differs.
+
+After install, relaunch VoiceInk. The xcframework's `whisper-coreml` layer probes for sibling `-5s` / `-10s` / `-15s` / `-30s` `.mlmodelc` files automatically and logs `loaded N shape variant(s)` on successful dispatch.
