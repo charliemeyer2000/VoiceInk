@@ -29,7 +29,8 @@ final class DFlashServerManager: ObservableObject {
     private var healthCheckTimer: Timer? = nil
 
     static let port: Int = 18921
-    static var baseURL: String { "http://127.0.0.1:\(port)/v1/chat/completions" }
+    // nonisolated because it's a pure function of a static constant
+    nonisolated static var baseURL: String { "http://127.0.0.1:\(port)/v1/chat/completions" }
 
     private init() {}
 
