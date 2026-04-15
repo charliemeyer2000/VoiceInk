@@ -69,6 +69,12 @@ enum AppDefaults {
             // history / playback / re-transcribe).
             "InMemoryCommitEnabled": true,
 
+            // DFlash local LLM enhancement via speculative decoding.
+            // When enabled and the provider is .dflash, the dflash-serve
+            // process starts automatically on app launch.
+            "dflashAutoStart": true,
+            "dflashSelectedModel": "qwen3.5-4b",
+
         ])
     }
 }

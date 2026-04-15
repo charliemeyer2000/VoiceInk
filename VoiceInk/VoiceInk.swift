@@ -159,6 +159,18 @@ struct VoiceInkApp: App {
         )
         _prewarmService = StateObject(wrappedValue: prewarmService)
 
+        // Auto-start DFlash local LLM server if previously enabled
+        if UserDefaults.standard.bool(forKey: "dflashAutoStart"),
+           UserDefaults.standard.string(forKey: "selectedAIProvider") == AIProvider.dflash.rawValue {
+            let modelID = UserDefaults.standard.string(forKey: "dflashSelectedModel") ?? "qwen3.5-4b"
+            if let model = DFlashModelRegistry.model(forID: modelID) {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    DFlashServerManager.shared.start(model: model)
+                }
+            }
+        }
+
         appDelegate.menuBarManager = menuBarManager
 
         // Ensure no lingering recording state from previous runs
