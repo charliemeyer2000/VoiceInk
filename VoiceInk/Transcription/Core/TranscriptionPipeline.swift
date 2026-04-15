@@ -49,6 +49,11 @@ class TranscriptionPipeline {
         onCleanup: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void
     ) async {
+        // Cancel the speculative enhancement on any exit path (cancellation,
+        // transcription failure, enhancement skipped) so we don't waste an
+        // LLM API call whose result will never be used.
+        defer { speculativeEnhancementTask?.cancel() }
+
         if shouldCancel() {
             await onCleanup()
             return
@@ -143,8 +148,12 @@ class TranscriptionPipeline {
                     // Try to reuse the speculative enhancement if the commit
                     // transcript is close enough to what the speculative pass
                     // saw. Saves the full LLM round-trip on the critical path.
+                    // Reject when prompt detection triggered — the speculative
+                    // call ran with the pre-detection prompt configuration.
+                    let promptChanged = promptDetectionResult?.shouldEnableAI == true
                     if let specTask = speculativeEnhancementTask,
                        let specTranscript = speculativeTranscript,
+                       !promptChanged,
                        Self.transcriptsMatch(specTranscript, textForAI) {
                         logger.notice("speculative enhancement: transcripts match, awaiting speculative result")
                         if let specResult = await specTask.value {

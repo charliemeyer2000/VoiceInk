@@ -152,8 +152,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
                        enhancementService.isEnhancementEnabled,
                        enhancementService.isConfigured {
                         let svc = enhancementService
-                        let specText = speculativeTranscript
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let mc = modelContext
+                        // Apply the same processing pipeline the commit path
+                        // uses so the LLM sees consistent input.
+                        var specText = TranscriptionOutputFilter.filter(speculativeTranscript)
+                        specText = specText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if UserDefaults.standard.bool(forKey: "IsTextFormattingEnabled") {
+                            specText = WhisperTextFormatter.format(specText)
+                        }
+                        specText = WordReplacementService.shared.applyReplacements(to: specText, using: mc)
                         if !specText.isEmpty {
                             speculativeEnhancementTask = Task {
                                 do {
