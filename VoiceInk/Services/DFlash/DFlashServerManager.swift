@@ -82,8 +82,9 @@ final class DFlashServerManager: ObservableObject {
                     let exitCode = proc.terminationStatus
                     self.status = .error("Server exited (\(exitCode))")
                     self.logger.error("DFlash server exited unexpectedly: \(exitCode, privacy: .public)")
+                } else {
+                    self.status = .off
                 }
-                self.status = .off
                 self.activeModelID = nil
             }
         }
