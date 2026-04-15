@@ -76,20 +76,21 @@ class ScreenCaptureService: ObservableObject {
                 sections.append(section)
             }
 
-            // 2. Full-screen capture of every connected display (concurrent)
+            // 2. Full-screen capture of additional displays only (skip
+            // single-monitor setups where the active window already covers it)
             let displays = content.displays
             if displays.count > 1 {
                 logger.info("Multi-monitor: capturing \(displays.count, privacy: .public) displays")
-            }
-
-            let screenResults = await captureAllDisplays(displays: displays, content: content)
-            for result in screenResults {
-                capturedImages[result.label] = result.image
-                sections.append(result.text)
+                let screenResults = await captureAllDisplays(displays: displays, content: content)
+                for result in screenResults {
+                    capturedImages[result.label] = result.image
+                    sections.append(result.text)
+                }
             }
 
             lastCapturedImages = capturedImages
 
+            guard !sections.isEmpty else { return nil }
             let contextText = sections.joined(separator: "\n\n---\n\n")
             lastCapturedText = contextText
             return contextText
