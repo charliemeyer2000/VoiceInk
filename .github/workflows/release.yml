@@ -1,10 +1,8 @@
-name: Build and Release
+name: Release
 
 on:
   push:
     branches: [main]
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -15,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +25,6 @@ jobs:
         run: |
           XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
           sudo xcode-select -s "$XCODE/Contents/Developer"
-          echo "Selected: $XCODE"
           swift --version
 
       - name: Accept Xcode license
@@ -47,21 +44,21 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.version }}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}"
           else
-            # Push to main — auto-generate a version tag from short SHA
             LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-version:refname | head -1)
             BASE="${LATEST_TAG:-v0.0.0}"
             SHORT_SHA=$(git rev-parse --short HEAD)
             TAG="${BASE}+${SHORT_SHA}"
-
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$TAG"
-            git push origin "$TAG"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -71,10 +68,24 @@ jobs:
           files: VoiceInk.dmg
           generate_release_notes: true
 
-      - name: Trigger overlay update
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}
+      - name: Compute DMG hash and update nix version
         run: |
-          gh workflow run update.yml \
-            --repo charliemeyer2000/voiceink-overlay \
-            -f version="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          URL="https://github.com/charliemeyer2000/VoiceInk/releases/download/${TAG}/VoiceInk.dmg"
+
+          # Hash the DMG we just built (already on disk)
+          SRI=$(shasum -a 256 VoiceInk.dmg | awk '{print $1}' | xxd -r -p | base64 | sed 's/^/sha256-/')
+
+          mkdir -p nix/versions
+          cat > "nix/versions/${VERSION}.json" <<EOF
+          {
+            "version": "${VERSION}",
+            "url": "${URL}",
+            "hash": "${SRI}"
+          }
+          EOF
+
+          git add "nix/versions/${VERSION}.json"
+          git commit -m "chore(nix): update version to ${TAG} [skip ci]" || true
+          git push origin HEAD:main || true
