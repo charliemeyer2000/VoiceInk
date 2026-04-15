@@ -61,6 +61,7 @@ final class DFlashServerManager: ObservableObject {
         process.executableURL = URL(fileURLWithPath: execPath)
         process.arguments = [
             "--model", model.targetHFID,
+            "--draft", model.draftHFID,
             "--port", String(Self.port),
             "--chat-template-args", "{\"enable_thinking\": false}",
         ]
@@ -69,8 +70,7 @@ final class DFlashServerManager: ObservableObject {
         env["PYTHONUNBUFFERED"] = "1"
         process.environment = env
 
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
+        process.standardError = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
 
         process.terminationHandler = { [weak self] proc in
