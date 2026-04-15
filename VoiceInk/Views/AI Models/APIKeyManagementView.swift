@@ -272,7 +272,7 @@ struct APIKeyManagementView: View {
                         .disabled(aiService.customBaseURL.isEmpty || aiService.customModel.isEmpty || apiKey.isEmpty)
                     }
                     
-                } else {
+                } else if aiService.selectedProvider != .dflash {
                     if aiService.isAPIKeyValid {
                         HStack {
                             Text("API Key")
