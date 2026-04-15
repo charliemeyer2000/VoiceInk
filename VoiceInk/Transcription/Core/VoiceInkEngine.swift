@@ -220,12 +220,21 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                     let specEnabled = UserDefaults.standard.bool(forKey: "SpeculativeTranscribeEnabled")
                                     let isLocal = model.provider == .local
 
+                                    // The buffer is needed by either feature: the commit path
+                                    // snapshots it to skip the WAV read, and speculative reads
+                                    // from it to build snapshots for warmth passes. Create it if
+                                    // either is on, but only publish to self.liveAudioBuffer when
+                                    // the commit path needs it — otherwise the snapshot-and-drop
+                                    // on stop would keep a copy of every sample around for no
+                                    // reason.
                                     var buffer: LiveAudioBuffer? = nil
-                                    if isLocal && inMemoryEnabled {
+                                    if isLocal && (inMemoryEnabled || specEnabled) {
                                         let b = LiveAudioBuffer()
                                         b.reset()
-                                        self.liveAudioBuffer = b
                                         buffer = b
+                                        if inMemoryEnabled {
+                                            self.liveAudioBuffer = b
+                                        }
                                     }
 
                                     var spec: SpeculativeTranscriber? = nil
