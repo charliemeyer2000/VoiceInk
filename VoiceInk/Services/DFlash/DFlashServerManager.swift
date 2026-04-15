@@ -66,9 +66,12 @@ final class DFlashServerManager: ObservableObject {
             "--port", String(Self.port),
             "--chat-template-args", "{\"enable_thinking\": false}",
         ]
-        // Inherit the user's PATH so huggingface-cli and python are found
+        // Inherit the user's PATH + common install locations so
+        // huggingface-cli, python, and model downloads are found
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin"
         process.environment = env
 
         process.standardError = FileHandle.nullDevice
@@ -170,10 +173,27 @@ final class DFlashServerManager: ObservableObject {
         if FileManager.default.isExecutableFile(atPath: envPath) {
             return envPath
         }
-        // 3. On PATH (user installed via uv/pip)
+        // 3. Common install locations (uv, pipx, homebrew, local bin)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/dflash-serve",
+            "\(home)/.local/share/uv/tools/dflash-mlx/bin/dflash-serve",
+            "/opt/homebrew/bin/dflash-serve",
+            "/usr/local/bin/dflash-serve",
+        ]
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        // 4. Fall back to which (for custom installs)
         let whichProcess = Process()
-        whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        whichProcess.arguments = ["dflash-serve"]
+        whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        whichProcess.arguments = ["which", "dflash-serve"]
+        // Give the process a full user PATH
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = (env["PATH"] ?? "") + ":\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+        whichProcess.environment = env
         let pipe = Pipe()
         whichProcess.standardOutput = pipe
         whichProcess.standardError = FileHandle.nullDevice
