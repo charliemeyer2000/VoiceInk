@@ -259,6 +259,13 @@ class AIEnhancementService: ObservableObject {
                     images: images
                 )
                 return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch let error as EnhancementError {
+                switch error {
+                case .rateLimitExceeded, .notConfigured, .serverError, .timeout:
+                    throw error
+                default:
+                    logger.warning("Vision request failed, falling through to text-only: \(error.localizedDescription, privacy: .public)")
+                }
             } catch {
                 logger.warning("Vision request failed, falling through to text-only: \(error.localizedDescription, privacy: .public)")
             }
@@ -320,7 +327,7 @@ class AIEnhancementService: ObservableObject {
         let provider = aiService.selectedProvider
 
         let imageBlocks: [[String: Any]] = images.compactMap { img in
-            guard let b64 = Self.cgImageToBase64PNG(img) else { return nil }
+            guard let b64 = Self.cgImageToBase64PNG(img, maxWidth: 1920) else { return nil }
             if provider == .anthropic {
                 return ["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": b64]]
             } else {
@@ -332,7 +339,7 @@ class AIEnhancementService: ObservableObject {
         let textBlock: [String: Any] = ["type": "text", "text": userText]
         let userContent: [[String: Any]] = imageBlocks + [textBlock]
 
-        let body: [String: Any]
+        var body: [String: Any]
         var request: URLRequest
 
         if provider == .anthropic {
@@ -350,13 +357,21 @@ class AIEnhancementService: ObservableObject {
             }
             request = URLRequest(url: baseURL)
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let temperature = model.lowercased().hasPrefix("gpt-5") ? 1.0 : 0.3
             body = [
                 "model": model,
+                "temperature": temperature,
                 "messages": [
                     ["role": "system", "content": systemPrompt],
                     ["role": "user", "content": userContent]
                 ]
             ]
+            if let reasoning = ReasoningConfig.getReasoningParameter(for: model) {
+                body["reasoning_effort"] = reasoning
+            }
+            if let extra = ReasoningConfig.getExtraBodyParameters(for: model) {
+                for (k, v) in extra { body[k] = v }
+            }
         }
 
         request.httpMethod = "POST"
@@ -365,8 +380,14 @@ class AIEnhancementService: ObservableObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "unknown"
+        guard let http = response as? HTTPURLResponse else {
+            throw EnhancementError.networkError
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 429 { throw EnhancementError.rateLimitExceeded }
+            if http.statusCode == 401 || http.statusCode == 403 { throw EnhancementError.notConfigured }
+            if (500...599).contains(http.statusCode) { throw EnhancementError.serverError }
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
             throw EnhancementError.customError("Vision API: \(msg)")
         }
 
@@ -381,8 +402,22 @@ class AIEnhancementService: ObservableObject {
         }
     }
 
-    private static func cgImageToBase64PNG(_ image: CGImage) -> String? {
-        let rep = NSBitmapImageRep(cgImage: image)
+    private static func cgImageToBase64PNG(_ image: CGImage, maxWidth: Int = 1920) -> String? {
+        var cgImg = image
+        if cgImg.width > maxWidth {
+            let scale = CGFloat(maxWidth) / CGFloat(cgImg.width)
+            let newW = Int(CGFloat(cgImg.width) * scale)
+            let newH = Int(CGFloat(cgImg.height) * scale)
+            if let ctx = CGContext(data: nil, width: newW, height: newH,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                ctx.interpolationQuality = .high
+                ctx.draw(cgImg, in: CGRect(x: 0, y: 0, width: newW, height: newH))
+                if let scaled = ctx.makeImage() { cgImg = scaled }
+            }
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImg)
         return rep.representation(using: .png, properties: [:])?.base64EncodedString()
     }
 
