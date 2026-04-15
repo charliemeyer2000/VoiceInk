@@ -399,6 +399,7 @@ class AIEnhancementService: ObservableObject {
     func clearCapturedContexts() {
         lastCapturedClipboard = nil
         screenCaptureService.lastCapturedText = nil
+        screenCaptureService.lastCapturedImages = [:]
     }
 
     func addPrompt(title: String, promptText: String, icon: PromptIcon = "doc.text.fill", description: String? = nil, triggerWords: [String] = [], useSystemInstructions: Bool = true) {
