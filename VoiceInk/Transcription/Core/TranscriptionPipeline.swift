@@ -253,4 +253,18 @@ class TranscriptionPipeline {
         let union = wordsA.union(wordsB).count
         return Double(intersection) / Double(union) >= 0.8
     }
+
+    // MARK: - Speculative enhancement comparison
+
+    /// Word-level Jaccard similarity. Returns true when the two transcripts
+    /// share ≥ 80% of their words — i.e. the speculative transcript captured
+    /// most of what the commit transcribe produced. Cheap O(n) check.
+    static func transcriptsMatch(_ a: String, _ b: String) -> Bool {
+        let wordsA = Set(a.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        let wordsB = Set(b.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        guard !wordsA.isEmpty, !wordsB.isEmpty else { return false }
+        let intersection = wordsA.intersection(wordsB).count
+        let union = wordsA.union(wordsB).count
+        return Double(intersection) / Double(union) >= 0.8
+    }
 }
