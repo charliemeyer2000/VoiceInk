@@ -246,8 +246,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                         spec = s
                                         self.logger.info("speculative: attached (model=\(model.name, privacy: .public))")
                                     } else if isLocal, specEnabled {
-                                        let reason = buffer == nil ? "InMemoryCommitEnabled is off" : "whisper context not yet loaded"
-                                        self.logger.info("speculative: skipped — \(reason, privacy: .public)")
+                                        self.logger.info("speculative: skipped — whisper context not yet loaded")
                                     }
 
                                     if buffer != nil || spec != nil {
