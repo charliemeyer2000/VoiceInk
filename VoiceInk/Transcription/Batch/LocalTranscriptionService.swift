@@ -15,6 +15,15 @@ class LocalTranscriptionService: TranscriptionService {
     }
 
     func transcribe(audioURL: URL, model: any TranscriptionModel) async throws -> String {
+        let samples = try readAudioSamples(audioURL)
+        return try await transcribe(samples: samples, model: model)
+    }
+
+    // In-memory commit path: reuse the live Int16 buffer captured by
+    // VoiceInkEngine during recording (already converted to Float via vDSP)
+    // instead of re-reading the WAV file from disk and doing a scalar
+    // Int16 -> Float conversion in readAudioSamples.
+    func transcribe(samples: [Float], model: any TranscriptionModel) async throws -> String {
         guard model.provider == .local else {
             throw VoiceInkEngineError.modelLoadFailed
         }
@@ -51,15 +60,12 @@ class LocalTranscriptionService: TranscriptionService {
             throw VoiceInkEngineError.modelLoadFailed
         }
 
-        // Read audio data
-        let data = try readAudioSamples(audioURL)
-
         // Set prompt
         let currentPrompt = UserDefaults.standard.string(forKey: "TranscriptionPrompt") ?? ""
         await whisperContext.setPrompt(currentPrompt)
 
         // Transcribe
-        let success = await whisperContext.fullTranscribe(samples: data)
+        let success = await whisperContext.fullTranscribe(samples: samples)
 
         guard success else {
             logger.error("❌ Core transcription engine failed (whisper_full).")
