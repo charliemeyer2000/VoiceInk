@@ -210,7 +210,10 @@ class AIService: ObservableObject {
                         await ollamaService.refreshModels()
                     }
                 } else if selectedProvider == .dflash {
-                    self.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+                    self.isAPIKeyValid = false
+                    Task { @MainActor [weak self] in
+                        self?.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+                    }
                 }
             }
             NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
@@ -231,7 +234,7 @@ class AIService: ObservableObject {
             } else if provider == .localCLI {
                 return localCLIService.isConfigured
             } else if provider == .dflash {
-                return DFlashServerManager.shared.status == .ready
+                return isAPIKeyValid && selectedProvider == .dflash
             } else if provider.requiresAPIKey {
                 return APIKeyManager.shared.hasAPIKey(forProvider: provider.rawValue)
             }
@@ -306,7 +309,9 @@ class AIService: ObservableObject {
         // Update isAPIKeyValid when DFlash server status changes
         NotificationCenter.default.addObserver(forName: .AppSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.selectedProvider == .dflash else { return }
-            self.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+            Task { @MainActor [weak self] in
+                self?.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+            }
         }
     }
     
