@@ -42,11 +42,18 @@ class TranscriptionPipeline {
         model: any TranscriptionModel,
         session: TranscriptionSession?,
         inMemorySamples: [Float]? = nil,
+        speculativeEnhancementTask: Task<(String, TimeInterval, String?)?, Never>? = nil,
+        speculativeTranscript: String? = nil,
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
         onCleanup: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void
     ) async {
+        // Cancel the speculative enhancement on any exit path (cancellation,
+        // transcription failure, enhancement skipped) so we don't waste an
+        // LLM API call whose result will never be used.
+        defer { speculativeEnhancementTask?.cancel() }
+
         if shouldCancel() {
             await onCleanup()
             return
@@ -134,7 +141,36 @@ class TranscriptionPipeline {
                 let textForAI = promptDetectionResult?.processedText ?? text
 
                 do {
-                    let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
+                    let enhancedText: String
+                    let enhancementDuration: TimeInterval
+                    let promptName: String?
+
+                    // Try to reuse the speculative enhancement if the commit
+                    // transcript is close enough to what the speculative pass
+                    // saw. Saves the full LLM round-trip on the critical path.
+                    // Reject when prompt detection triggered — the speculative
+                    // call ran with the pre-detection prompt configuration.
+                    let promptChanged = promptDetectionResult?.shouldEnableAI == true
+                    if let specTask = speculativeEnhancementTask,
+                       let specTranscript = speculativeTranscript,
+                       !promptChanged,
+                       Self.transcriptsMatch(specTranscript, textForAI) {
+                        logger.notice("speculative enhancement: transcripts match, awaiting speculative result")
+                        if let specResult = await specTask.value {
+                            (enhancedText, enhancementDuration, promptName) = specResult
+                            logger.notice("speculative enhancement: reused (saved LLM round-trip)")
+                        } else {
+                            logger.notice("speculative enhancement: failed, falling back to fresh call")
+                            (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
+                        }
+                    } else {
+                        if speculativeEnhancementTask != nil {
+                            speculativeEnhancementTask?.cancel()
+                            logger.notice("speculative enhancement: transcripts diverged, cancelled speculative, running fresh")
+                        }
+                        (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
+                    }
+
                     logger.notice("📝 AI enhancement: \(enhancedText, privacy: .public)")
                     transcription.enhancedText = enhancedText
                     transcription.aiEnhancementModelName = enhancementService.getAIService()?.currentModel
@@ -211,5 +247,19 @@ class TranscriptionPipeline {
 
         // Start monitoring only after recorder is fully dismissed — no race with focus changes from our own UI
         AutoLearnVocabularyService.shared.beginMonitoring()
+    }
+
+    // MARK: - Speculative enhancement comparison
+
+    /// Word-level Jaccard similarity. Returns true when the two transcripts
+    /// share ≥ 80% of their words — i.e. the speculative transcript captured
+    /// most of what the commit transcribe produced. Cheap O(n) check.
+    static func transcriptsMatch(_ a: String, _ b: String) -> Bool {
+        let wordsA = Set(a.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        let wordsB = Set(b.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        guard !wordsA.isEmpty, !wordsB.isEmpty else { return false }
+        let intersection = wordsA.intersection(wordsB).count
+        let union = wordsA.union(wordsB).count
+        return Double(intersection) / Double(union) >= 0.8
     }
 }
