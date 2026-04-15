@@ -291,7 +291,13 @@ class AIService: ObservableObject {
                 self.isAPIKeyValid = true
             }
         } else {
-            self.isAPIKeyValid = selectedProvider == .localCLI ? localCLIService.isConfigured : true
+            if selectedProvider == .localCLI {
+                self.isAPIKeyValid = localCLIService.isConfigured
+            } else if selectedProvider == .dflash {
+                self.isAPIKeyValid = false  // updated by DFlashServerManager health check
+            } else {
+                self.isAPIKeyValid = true
+            }
         }
 
         loadSavedModelSelections()

@@ -123,40 +123,42 @@ final class DFlashModelRegistry: ObservableObject {
     }
 
     private func downloadHFModel(hfID: String, modelID: String, baseProgress: Double) async -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["huggingface-cli", "download", hfID]
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                process.arguments = ["huggingface-cli", "download", hfID]
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
 
-        await MainActor.run { self.downloadProcess = process }
+                Task { @MainActor [weak self] in self?.downloadProcess = process }
 
-        do {
-            try process.run()
-        } catch {
-            logger.error("Failed to start huggingface-cli: \(error.localizedDescription, privacy: .public)")
-            return false
-        }
-
-        // Read output for progress (huggingface-cli prints progress bars)
-        let handle = pipe.fileHandleForReading
-        handle.readabilityHandler = { [weak self] fh in
-            let data = fh.availableData
-            guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-            // Parse percentage from HF CLI output like "Downloading: 45%"
-            if let range = line.range(of: #"(\d+)%"#, options: .regularExpression),
-               let pct = Double(line[range].dropLast()) {
-                Task { @MainActor [weak self] in
-                    self?.downloadProgress[modelID] = baseProgress + (pct / 100.0) * 0.5
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: false)
+                    return
                 }
+
+                let handle = pipe.fileHandleForReading
+                handle.readabilityHandler = { fh in
+                    let data = fh.availableData
+                    guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
+                    if let range = line.range(of: #"(\d+)%"#, options: .regularExpression),
+                       let pct = Double(line[range].dropLast()) {
+                        Task { @MainActor [weak self] in
+                            self?.downloadProgress[modelID] = baseProgress + (pct / 100.0) * 0.5
+                        }
+                    }
+                }
+
+                process.waitUntilExit()
+                handle.readabilityHandler = nil
+                Task { @MainActor [weak self] in self?.downloadProcess = nil }
+                continuation.resume(returning: process.terminationStatus == 0)
             }
         }
-
-        process.waitUntilExit()
-        handle.readabilityHandler = nil
-        await MainActor.run { self.downloadProcess = nil }
-        return process.terminationStatus == 0
     }
 }

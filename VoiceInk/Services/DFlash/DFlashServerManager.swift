@@ -25,6 +25,7 @@ final class DFlashServerManager: ObservableObject {
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "DFlashServerManager")
     private var serverProcess: Process? = nil
+    private var serverProcessID: Int32 = 0  // track which process the terminationHandler belongs to
     private var healthCheckTimer: Timer? = nil
 
     static let port: Int = 18921
@@ -73,8 +74,9 @@ final class DFlashServerManager: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
 
         process.terminationHandler = { [weak self] proc in
+            let terminatedPID = proc.processIdentifier
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.serverProcessID == terminatedPID else { return }
                 self.healthCheckTimer?.invalidate()
                 self.healthCheckTimer = nil
                 self.serverProcess = nil
@@ -92,6 +94,7 @@ final class DFlashServerManager: ObservableObject {
         do {
             try process.run()
             serverProcess = process
+            serverProcessID = process.processIdentifier
             startHealthCheck()
         } catch {
             status = .error("Failed to launch: \(error.localizedDescription)")
@@ -146,6 +149,7 @@ final class DFlashServerManager: ObservableObject {
                 if status == .starting {
                     status = .ready
                     logger.info("DFlash server ready")
+                    NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
                 }
             }
         } catch {
