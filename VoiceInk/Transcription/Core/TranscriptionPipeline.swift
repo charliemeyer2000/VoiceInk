@@ -41,6 +41,7 @@ class TranscriptionPipeline {
         audioURL: URL,
         model: any TranscriptionModel,
         session: TranscriptionSession?,
+        inMemorySamples: [Float]? = nil,
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
         onCleanup: @escaping () async -> Void,
@@ -67,7 +68,14 @@ class TranscriptionPipeline {
         do {
             let transcriptionStart = Date()
             var text: String
-            if let session {
+            // In-memory path wins for local even when a session exists, because
+            // VoiceInkEngine always creates a FileTranscriptionSession for local
+            // models (they don't stream). Checking `session` first would shadow
+            // the in-memory optimization and make it dead code.
+            if let inMemorySamples, model.provider == .local {
+                logger.notice("🔄 Using in-memory commit path (skipping WAV read)")
+                text = try await serviceRegistry.transcribe(samples: inMemorySamples, model: model)
+            } else if let session {
                 text = try await session.transcribe(audioURL: audioURL)
             } else {
                 text = try await serviceRegistry.transcribe(audioURL: audioURL, model: model)

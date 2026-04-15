@@ -60,6 +60,15 @@ enum AppDefaults {
             // (no whisperContext to warm) regardless of this flag.
             "SpeculativeTranscribeEnabled": true,
 
+            // Hand the live recording buffer straight to the commit
+            // transcribe path instead of writing a WAV to disk and re-reading
+            // it. Skips disk IO + scalar Int16->Float conversion in
+            // LocalTranscriptionService.readAudioSamples on the critical
+            // path. Local-model only — cloud services still upload the WAV.
+            // Disk-write of the WAV still happens (kept for transcription
+            // history / playback / re-transcribe).
+            "InMemoryCommitEnabled": true,
+
         ])
     }
 }
