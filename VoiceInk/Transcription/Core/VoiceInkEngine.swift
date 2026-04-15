@@ -97,6 +97,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if recordingState == .recording {
             partialTranscript = ""
             recordingState = .transcribing
+            // Grab the last successful speculative transcript BEFORE
+            // stopAndDrain aborts the in-flight pass. This is the text from
+            // the most recently completed speculative whisper_full pass.
+            let speculativeTranscript = speculativeTranscriber?.lastTranscript
+            if let speculativeTranscript {
+                logger.info("speculative transcript captured (\(speculativeTranscript.count, privacy: .public) chars)")
+            }
             // Drain any in-flight speculative whisper_full pass BEFORE the
             // audio recorder is stopped and the commit transcribe fires.
             // This unwinds the speculative call via its ggml abort_callback
@@ -133,7 +140,34 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     try? modelContext.save()
                     NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
 
-                    await runPipeline(on: transcription, audioURL: recordedFile, inMemorySamples: inMemorySamples)
+                    // Fire speculative enhancement in parallel with the commit
+                    // transcribe if we have a speculative transcript and
+                    // enhancement is enabled. The pipeline will compare the
+                    // commit transcript with the speculative one — if close
+                    // enough, it uses the already-in-flight result instead of
+                    // waiting for a fresh LLM call.
+                    var speculativeEnhancementTask: Task<(String, TimeInterval, String?)?, Never>? = nil
+                    if let speculativeTranscript,
+                       let enhancementService,
+                       enhancementService.isEnhancementEnabled,
+                       enhancementService.isConfigured {
+                        let svc = enhancementService
+                        let specText = speculativeTranscript
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !specText.isEmpty {
+                            speculativeEnhancementTask = Task {
+                                do {
+                                    let result = try await svc.enhance(specText)
+                                    return result
+                                } catch {
+                                    return nil
+                                }
+                            }
+                            logger.info("speculative enhancement fired")
+                        }
+                    }
+
+                    await runPipeline(on: transcription, audioURL: recordedFile, inMemorySamples: inMemorySamples, speculativeEnhancementTask: speculativeEnhancementTask, speculativeTranscript: speculativeTranscript)
                 } else {
                     currentSession?.cancel()
                     currentSession = nil
@@ -322,7 +356,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Pipeline Dispatch
 
-    private func runPipeline(on transcription: Transcription, audioURL: URL, inMemorySamples: [Float]? = nil) async {
+    private func runPipeline(on transcription: Transcription, audioURL: URL, inMemorySamples: [Float]? = nil, speculativeEnhancementTask: Task<(String, TimeInterval, String?)?, Never>? = nil, speculativeTranscript: String? = nil) async {
         guard let model = transcriptionModelManager.currentTranscriptionModel else {
             transcription.text = "Transcription Failed: No model selected"
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
@@ -340,6 +374,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             model: model,
             session: session,
             inMemorySamples: inMemorySamples,
+            speculativeEnhancementTask: speculativeEnhancementTask,
+            speculativeTranscript: speculativeTranscript,
             onStateChange: { [weak self] state in self?.recordingState = state },
             shouldCancel: { [weak self] in self?.shouldCancelRecording ?? false },
             onCleanup: { [weak self] in await self?.cleanupResources() },

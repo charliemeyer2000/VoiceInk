@@ -54,6 +54,12 @@ final class SpeculativeTranscriber {
     // queue at dispatch time so no new pass launches after stop.
     private let stopped = OSAllocatedUnfairLock(initialState: false)
 
+    // Last successful speculative transcript. Updated on the serial queue
+    // after each completed pass. Read by VoiceInkEngine on stop to kick
+    // off speculative enhancement before the commit transcribe finishes.
+    private let _lastTranscript = OSAllocatedUnfairLock<String?>(initialState: nil)
+    var lastTranscript: String? { _lastTranscript.withLock { $0 } }
+
     // Abort flag: single heap-allocated Bool* shared with whisper.cpp as
     // abort_callback_user_data. Flipping to true from any thread causes the
     // in-flight whisper_full to unwind at the next ggml compute step.
@@ -76,6 +82,7 @@ final class SpeculativeTranscriber {
     // responsible for resetting the LiveAudioBuffer separately.
     func start() {
         stopped.withLock { $0 = false }
+        _lastTranscript.withLock { $0 = nil }
         abortFlag.pointee = false
         serialQueue.async { [weak self] in
             self?.inFlight = false
@@ -168,6 +175,8 @@ final class SpeculativeTranscriber {
             let success = await contextRef.speculativeTranscribe(samples: floatSamples, abortFlag: abortPtr)
             let elapsedMs = Date().timeIntervalSince(startedAt) * 1000
             if success {
+                let transcript = await contextRef.getTranscription()
+                self?._lastTranscript.withLock { $0 = transcript }
                 logger.info("speculative: pass done audio=\(audioSec, privacy: .public)s elapsed=\(elapsedMs, privacy: .public)ms snap_samples=\(snapCount, privacy: .public)")
             } else if abortPtr.pointee {
                 logger.info("speculative: pass aborted audio=\(audioSec, privacy: .public)s elapsed=\(elapsedMs, privacy: .public)ms")
