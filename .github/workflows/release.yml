@@ -87,5 +87,5 @@ jobs:
           EOF
 
           git add "nix/versions/${VERSION}.json"
-          git commit -m "chore: update nix version to ${TAG}" || true
+          git commit -m "chore(nix): update version to ${TAG} [skip ci]" || true
           git push origin HEAD:main || true
