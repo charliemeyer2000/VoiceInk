@@ -14,6 +14,7 @@ enum AIProvider: String, CaseIterable {
     case soniox = "Soniox"
     case speechmatics = "Speechmatics"
     case ollama = "Ollama"
+    case dflash = "DFlash Local"
     case localCLI = "Local CLI"
     case custom = "Custom"
     
@@ -44,6 +45,8 @@ enum AIProvider: String, CaseIterable {
             return "https://asr.api.speechmatics.com/v2"
         case .ollama:
             return UserDefaults.standard.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
+        case .dflash:
+            return DFlashServerManager.baseURL
         case .localCLI:
             return ""
         case .custom:
@@ -75,6 +78,12 @@ enum AIProvider: String, CaseIterable {
             return "speechmatics-enhanced"
         case .ollama:
             return UserDefaults.standard.string(forKey: "ollamaSelectedModel") ?? "mistral"
+        case .dflash:
+            if let modelID = UserDefaults.standard.string(forKey: "dflashSelectedModel"),
+               let model = DFlashModelRegistry.model(forID: modelID) {
+                return model.targetHFID
+            }
+            return DFlashModelRegistry.supportedModels.first!.targetHFID
         case .localCLI:
             return "local-cli"
         case .custom:
@@ -147,6 +156,8 @@ enum AIProvider: String, CaseIterable {
             return ["speechmatics-enhanced"]
         case .ollama:
             return []
+        case .dflash:
+            return DFlashModelRegistry.supportedModels.map { $0.targetHFID }
         case .localCLI:
             return []
         case .custom:
@@ -158,7 +169,7 @@ enum AIProvider: String, CaseIterable {
     
     var requiresAPIKey: Bool {
         switch self {
-        case .ollama, .localCLI:
+        case .ollama, .localCLI, .dflash:
             return false
         default:
             return true
@@ -198,6 +209,8 @@ class AIService: ObservableObject {
                         await ollamaService.checkConnection()
                         await ollamaService.refreshModels()
                     }
+                } else if selectedProvider == .dflash {
+                    self.isAPIKeyValid = DFlashServerManager.shared.status == .ready
                 }
             }
             NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
@@ -217,6 +230,8 @@ class AIService: ObservableObject {
                 return ollamaService.isConnected
             } else if provider == .localCLI {
                 return localCLIService.isConfigured
+            } else if provider == .dflash {
+                return DFlashServerManager.shared.status == .ready
             } else if provider.requiresAPIKey {
                 return APIKeyManager.shared.hasAPIKey(forProvider: provider.rawValue)
             }
@@ -276,11 +291,23 @@ class AIService: ObservableObject {
                 self.isAPIKeyValid = true
             }
         } else {
-            self.isAPIKeyValid = selectedProvider == .localCLI ? localCLIService.isConfigured : true
+            if selectedProvider == .localCLI {
+                self.isAPIKeyValid = localCLIService.isConfigured
+            } else if selectedProvider == .dflash {
+                self.isAPIKeyValid = false  // updated by DFlashServerManager health check
+            } else {
+                self.isAPIKeyValid = true
+            }
         }
 
         loadSavedModelSelections()
         loadSavedOpenRouterModels()
+
+        // Update isAPIKeyValid when DFlash server status changes
+        NotificationCenter.default.addObserver(forName: .AppSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.selectedProvider == .dflash else { return }
+            self.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+        }
     }
     
     private func loadSavedModelSelections() {

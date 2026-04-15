@@ -9,6 +9,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarManager?.applyActivationPolicy()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        DFlashServerManager.shared.stop()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag, let menuBarManager = menuBarManager, !menuBarManager.isMenuBarOnly {
             if WindowManager.shared.showMainWindow() != nil {
