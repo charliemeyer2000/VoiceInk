@@ -117,7 +117,11 @@ class ScreenCaptureService: ObservableObject {
                 group.addTask { [self] in
                     do {
                         let appsOnDisplay = content.applications.filter { $0.processID != currentPID }
-                        let filter = SCContentFilter(display: display, including: appsOnDisplay)
+                        let windowsOnDisplay = content.windows.filter { window in
+                            appsOnDisplay.contains { $0.processID == window.owningApplication?.processID } &&
+                            window.isOnScreen
+                        }
+                        let filter = SCContentFilter(display: display, including: windowsOnDisplay)
 
                         let config = SCStreamConfiguration()
                         config.width = Int(display.width) * 2
