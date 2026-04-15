@@ -147,14 +147,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     // enough, it uses the already-in-flight result instead of
                     // waiting for a fresh LLM call.
                     var speculativeEnhancementTask: Task<(String, TimeInterval, String?)?, Never>? = nil
+                    var processedSpeculativeTranscript: String? = nil
                     if let speculativeTranscript,
                        let enhancementService,
                        enhancementService.isEnhancementEnabled,
                        enhancementService.isConfigured {
                         let svc = enhancementService
                         let mc = modelContext
-                        // Apply the same processing pipeline the commit path
-                        // uses so the LLM sees consistent input.
                         var specText = TranscriptionOutputFilter.filter(speculativeTranscript)
                         specText = specText.trimmingCharacters(in: .whitespacesAndNewlines)
                         if UserDefaults.standard.bool(forKey: "IsTextFormattingEnabled") {
@@ -162,6 +161,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         }
                         specText = WordReplacementService.shared.applyReplacements(to: specText, using: mc)
                         if !specText.isEmpty {
+                            processedSpeculativeTranscript = specText
                             speculativeEnhancementTask = Task {
                                 do {
                                     let result = try await svc.enhance(specText)
@@ -174,7 +174,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         }
                     }
 
-                    await runPipeline(on: transcription, audioURL: recordedFile, inMemorySamples: inMemorySamples, speculativeEnhancementTask: speculativeEnhancementTask, speculativeTranscript: speculativeTranscript)
+                    await runPipeline(on: transcription, audioURL: recordedFile, inMemorySamples: inMemorySamples, speculativeEnhancementTask: speculativeEnhancementTask, speculativeTranscript: processedSpeculativeTranscript)
                 } else {
                     currentSession?.cancel()
                     currentSession = nil
