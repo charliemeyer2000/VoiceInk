@@ -302,6 +302,12 @@ class AIService: ObservableObject {
 
         loadSavedModelSelections()
         loadSavedOpenRouterModels()
+
+        // Update isAPIKeyValid when DFlash server status changes
+        NotificationCenter.default.addObserver(forName: .AppSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.selectedProvider == .dflash else { return }
+            self.isAPIKeyValid = DFlashServerManager.shared.status == .ready
+        }
     }
     
     private func loadSavedModelSelections() {
