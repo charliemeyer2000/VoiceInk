@@ -68,7 +68,7 @@ final class DFlashModelRegistry: ObservableObject {
         Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024))
     }()
 
-    static func model(forID id: String) -> DFlashModel? {
+    nonisolated static func model(forID id: String) -> DFlashModel? {
         supportedModels.first { $0.id == id }
     }
 
