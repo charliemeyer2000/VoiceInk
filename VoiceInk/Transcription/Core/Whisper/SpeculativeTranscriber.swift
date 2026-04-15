@@ -1,5 +1,4 @@
 import Foundation
-import Accelerate
 import os
 
 // Runs silent background whisper_full passes during recording so the CoreML
@@ -12,12 +11,10 @@ import os
 // speculative segments left in the context.
 //
 // Thread model:
-//   - appendChunk(_:) is called from the CoreAudioRecorder audio thread.
-//     Only operation is memcpy'ing Int16 bytes into the shared buffer under an
-//     OSAllocatedUnfairLock. Swift arrays grow geometrically, so
-//     reserveCapacity on the hot path only triggers a real heap allocation
-//     for the first few seconds of a recording — after that the buffer
-//     capacity exceeds any further chunk and appends are amortised O(1).
+//   - The audio buffer is owned by VoiceInkEngine (LiveAudioBuffer). The
+//     audio thread appends chunks to it, then calls `kick()` here to schedule
+//     evaluation. We don't own the buffer because the commit transcribe
+//     also reads from it (see VoiceInkEngine.toggleRecord stop branch).
 //   - The internal serial DispatchQueue (qos: .utility) runs the snapshot +
 //     conversion + await whisperContext.speculativeTranscribe.
 //   - stopAndDrain() is called from the MainActor (VoiceInkEngine.toggleRecord)
@@ -37,12 +34,8 @@ final class SpeculativeTranscriber {
     private static let minGrowthBetweenPasses: Int = sampleRate                            // 16000 (1s)
 
     private let whisperContext: WhisperContext
+    private let audioBuffer: LiveAudioBuffer
     private let logger: Logger
-
-    // Shared audio buffer — append-only from audio thread, snapshot-read
-    // from serial queue. Int16 to avoid per-chunk float conversion on the
-    // audio thread (hot path); conversion happens on the utility queue.
-    private let bufferLock = OSAllocatedUnfairLock(initialState: [Int16]())
 
     // Serial queue state (accessed only from serialQueue; no extra locks).
     private let serialQueue = DispatchQueue(
@@ -66,8 +59,9 @@ final class SpeculativeTranscriber {
     // in-flight whisper_full to unwind at the next ggml compute step.
     private let abortFlag: UnsafeMutablePointer<Bool>
 
-    init(whisperContext: WhisperContext) {
+    init(whisperContext: WhisperContext, audioBuffer: LiveAudioBuffer) {
         self.whisperContext = whisperContext
+        self.audioBuffer = audioBuffer
         self.logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "SpeculativeTranscriber")
         self.abortFlag = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
         self.abortFlag.initialize(to: false)
@@ -78,9 +72,9 @@ final class SpeculativeTranscriber {
         abortFlag.deallocate()
     }
 
-    // Reset state for a new recording session. Idempotent.
+    // Reset state for a new recording session. Idempotent. Caller is
+    // responsible for resetting the LiveAudioBuffer separately.
     func start() {
-        bufferLock.withLock { $0.removeAll(keepingCapacity: true) }
         stopped.withLock { $0 = false }
         abortFlag.pointee = false
         serialQueue.async { [weak self] in
@@ -88,29 +82,12 @@ final class SpeculativeTranscriber {
             self?.inFlightTask = nil
             self?.lastDispatchedSampleCount = 0
         }
-        logger.info("speculative: start — buffer reset")
+        logger.info("speculative: start")
     }
 
-    // Called from the audio thread for each Int16 PCM chunk. Only appends
-    // bytes to the shared buffer; dispatch decision and transcribe happen on
-    // the serial queue.
-    func appendChunk(_ data: Data) {
-        // Append Int16 samples from the Data bytes. Data is Int16 PCM mono @ 16kHz
-        // (see CoreAudioRecorder.swift — byteCount = frames * sizeof(Int16)).
-        let sampleCount = data.count / MemoryLayout<Int16>.size
-        if sampleCount == 0 { return }
-
-        bufferLock.withLock { buffer in
-            let oldCount = buffer.count
-            buffer.reserveCapacity(oldCount + sampleCount)
-            data.withUnsafeBytes { rawBuf in
-                guard let src = rawBuf.bindMemory(to: Int16.self).baseAddress else { return }
-                buffer.append(contentsOf: UnsafeBufferPointer(start: src, count: sampleCount))
-            }
-        }
-
-        // Kick the serial queue to evaluate whether to launch a pass. This is
-        // cheap when a pass is in flight (async dispatch + flag check).
+    // Called from the audio thread after each chunk is appended to the buffer.
+    // Cheap when a pass is in flight (async dispatch + flag check).
+    func kick() {
         serialQueue.async { [weak self] in
             self?.evaluateAndDispatch()
         }
@@ -154,7 +131,7 @@ final class SpeculativeTranscriber {
         if stopped.withLock({ $0 }) { return }
         if inFlight { return }
 
-        let bufCount = bufferLock.withLock { $0.count }
+        let bufCount = audioBuffer.sampleCount
         if bufCount < Self.minSamplesForSpeculation { return }
         if bufCount - lastDispatchedSampleCount < Self.minGrowthBetweenPasses { return }
 
@@ -162,22 +139,21 @@ final class SpeculativeTranscriber {
         // CoreML dispatch picks the same .mlmodelc variant across passes.
         guard let snapCount = Self.snapToBoundary(bufCount) else { return }
 
+        // Snapshot the [0, snapCount) Int16 prefix from the shared buffer.
+        // The audio thread can keep appending past snapCount without
+        // interfering — Array(buffer[0..<snapCount]) copies into a new array.
+        guard let samples = audioBuffer.snapshotInt16Prefix(samples: snapCount) else { return }
+
         inFlight = true
         lastDispatchedSampleCount = bufCount
-
-        // Copy the [0, snapCount) slice out under the lock so the audio thread
-        // can keep appending without interference.
-        let samples: [Int16] = bufferLock.withLock { buffer in
-            Array(buffer[0..<snapCount])
-        }
 
         let startedAt = Date()
         let audioSec = Double(snapCount) / Double(Self.sampleRate)
 
         // Convert Int16 → Float32 in the normalized [-1, 1] range using
-        // Accelerate (vDSP_vflt16 + vDSP_vsmul). Matches what
-        // LocalTranscriptionService.readAudioSamples does scalar-ly from WAV.
-        let floatSamples = Self.convertInt16ToFloat(samples)
+        // Accelerate (vDSP_vflt16 + vDSP_vsmul). Same conversion the commit
+        // path uses via LiveAudioBuffer.snapshotAsFloat.
+        let floatSamples = LiveAudioBuffer.convertInt16ToFloat(samples)
 
         // Launch the transcribe on the whisper actor. The Task handle is
         // stored in inFlightTask so stopAndDrain can await it — the serial
@@ -216,20 +192,5 @@ final class SpeculativeTranscriber {
             chosen = boundary
         }
         return chosen
-    }
-
-    private static func convertInt16ToFloat(_ samples: [Int16]) -> [Float] {
-        let count = samples.count
-        var floats = [Float](repeating: 0.0, count: count)
-        samples.withUnsafeBufferPointer { inBuf in
-            floats.withUnsafeMutableBufferPointer { outBuf in
-                vDSP_vflt16(inBuf.baseAddress!, 1, outBuf.baseAddress!, 1, vDSP_Length(count))
-            }
-        }
-        var scale: Float = 1.0 / 32767.0
-        floats.withUnsafeMutableBufferPointer { outBuf in
-            vDSP_vsmul(outBuf.baseAddress!, 1, &scale, outBuf.baseAddress!, 1, vDSP_Length(count))
-        }
-        return floats
     }
 }

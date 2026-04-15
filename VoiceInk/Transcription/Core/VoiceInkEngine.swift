@@ -22,6 +22,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // the user stops doesn't pay cold-start latency.
     var speculativeTranscriber: SpeculativeTranscriber?
 
+    // Non-nil while a local-model recording is underway and the in-memory
+    // commit path is enabled. The recorder still writes a WAV to disk for
+    // history/playback, but the commit transcribe reads the same samples
+    // from this buffer, skipping the disk read + scalar Int16->Float
+    // conversion in LocalTranscriptionService.readAudioSamples.
+    var liveAudioBuffer: LiveAudioBuffer?
+
     // Injected managers
     let whisperModelManager: WhisperModelManager
     let transcriptionModelManager: TranscriptionModelManager
@@ -100,6 +107,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
             await recorder.stopRecording()
 
+            // Snapshot the live audio buffer to Float for the in-memory commit
+            // path. Done after stopRecording so any final chunks landed by the
+            // audio thread are included. The snapshot copies; we then drop the
+            // buffer reference so the underlying storage can be freed once the
+            // commit transcribe is done with the snapshot.
+            let inMemorySamples: [Float]? = liveAudioBuffer?.snapshotAsFloat()
+            liveAudioBuffer = nil
+            if let inMemorySamples {
+                logger.info("in-memory commit: snapshot samples=\(inMemorySamples.count, privacy: .public)")
+            }
+
             if let recordedFile {
                 if !shouldCancelRecording {
                     let audioAsset = AVURLAsset(url: recordedFile)
@@ -115,7 +133,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     try? modelContext.save()
                     NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
 
-                    await runPipeline(on: transcription, audioURL: recordedFile)
+                    await runPipeline(on: transcription, audioURL: recordedFile, inMemorySamples: inMemorySamples)
                 } else {
                     currentSession?.cancel()
                     currentSession = nil
@@ -187,33 +205,65 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                     }
                                     for chunk in buffered { realCallback(chunk) }
                                 } else {
-                                    // Local-model path: no realtime streaming service. If
-                                    // the whisper context is already loaded (prewarm done),
-                                    // tap chunks into SpeculativeTranscriber so the encoder
-                                    // stays warm through recording.
+                                    // Local-model path: no realtime streaming service.
+                                    //
+                                    // Two optional features tap the audio chunk stream:
+                                    //   1. LiveAudioBuffer — captures Int16 PCM in memory so
+                                    //      the commit transcribe can skip the WAV disk read.
+                                    //      Gated on InMemoryCommitEnabled.
+                                    //   2. SpeculativeTranscriber — runs warmth passes during
+                                    //      recording. Gated on SpeculativeTranscribeEnabled
+                                    //      and requires the whisper context to already be
+                                    //      loaded (otherwise we'd cold-start the encoder
+                                    //      under the user's hands).
+                                    let inMemoryEnabled = UserDefaults.standard.bool(forKey: "InMemoryCommitEnabled")
                                     let specEnabled = UserDefaults.standard.bool(forKey: "SpeculativeTranscribeEnabled")
-                                    if specEnabled, model.provider == .local,
+                                    let isLocal = model.provider == .local
+
+                                    var buffer: LiveAudioBuffer? = nil
+                                    if isLocal && inMemoryEnabled {
+                                        let b = LiveAudioBuffer()
+                                        b.reset()
+                                        self.liveAudioBuffer = b
+                                        buffer = b
+                                    }
+
+                                    var spec: SpeculativeTranscriber? = nil
+                                    if isLocal, specEnabled, let buffer = buffer,
                                        let loadedContext = self.whisperModelManager.whisperContext {
-                                        let spec = SpeculativeTranscriber(whisperContext: loadedContext)
-                                        self.speculativeTranscriber = spec
-                                        spec.start()
+                                        let s = SpeculativeTranscriber(whisperContext: loadedContext, audioBuffer: buffer)
+                                        s.start()
+                                        self.speculativeTranscriber = s
+                                        spec = s
+                                        self.logger.info("speculative: attached (model=\(model.name, privacy: .public))")
+                                    } else if isLocal, specEnabled {
+                                        let reason = buffer == nil ? "InMemoryCommitEnabled is off" : "whisper context not yet loaded"
+                                        self.logger.info("speculative: skipped — \(reason, privacy: .public)")
+                                    }
+
+                                    if buffer != nil || spec != nil {
+                                        let bufferRef = buffer
+                                        let specRef = spec
                                         self.recorder.onAudioChunk = { data in
-                                            spec.appendChunk(data)
+                                            bufferRef?.append(data)
+                                            specRef?.kick()
                                         }
-                                        // Drain pre-start buffer into the speculative transcriber too.
+                                        // Drain pre-start buffer into the live buffer.
                                         let buffered = pendingChunks.withLock { chunks -> [Data] in
                                             let result = chunks
                                             chunks.removeAll()
                                             return result
                                         }
-                                        for chunk in buffered { spec.appendChunk(chunk) }
-                                        self.logger.info("speculative: attached (model=\(model.name, privacy: .public))")
+                                        for chunk in buffered {
+                                            bufferRef?.append(chunk)
+                                        }
+                                        // One kick after draining so speculative can evaluate
+                                        // the full pre-start prefix in one go (kicking per
+                                        // chunk would queue redundant evaluations).
+                                        specRef?.kick()
                                     } else {
                                         self.recorder.onAudioChunk = nil
                                         pendingChunks.withLock { $0.removeAll() }
-                                        if specEnabled, model.provider == .local {
-                                            self.logger.info("speculative: skipped — whisper context not yet loaded")
-                                        }
                                     }
                                 }
                             }
@@ -264,7 +314,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Pipeline Dispatch
 
-    private func runPipeline(on transcription: Transcription, audioURL: URL) async {
+    private func runPipeline(on transcription: Transcription, audioURL: URL, inMemorySamples: [Float]? = nil) async {
         guard let model = transcriptionModelManager.currentTranscriptionModel else {
             transcription.text = "Transcription Failed: No model selected"
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
@@ -281,6 +331,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             audioURL: audioURL,
             model: model,
             session: session,
+            inMemorySamples: inMemorySamples,
             onStateChange: { [weak self] state in self?.recordingState = state },
             shouldCancel: { [weak self] in self?.shouldCancelRecording ?? false },
             onCleanup: { [weak self] in await self?.cleanupResources() },

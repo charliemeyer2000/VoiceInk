@@ -44,6 +44,14 @@ class TranscriptionServiceRegistry {
         return try await service.transcribe(audioURL: audioURL, model: effectiveModel)
     }
 
+    // In-memory commit path for the local-model batch case: skips the
+    // WAV write -> read -> scalar Int16->Float round-trip by handing the live
+    // recording buffer straight to the local whisper actor.
+    func transcribe(samples: [Float], model: any TranscriptionModel) async throws -> String {
+        logger.debug("Transcribing in-memory samples=\(samples.count, privacy: .public) with \(model.displayName, privacy: .public)")
+        return try await localTranscriptionService.transcribe(samples: samples, model: model)
+    }
+
     /// Creates a streaming or file-based session depending on the model's capabilities.
     func createSession(for model: any TranscriptionModel, onPartialTranscript: ((String) -> Void)? = nil) -> TranscriptionSession {
         if supportsStreaming(model: model) {

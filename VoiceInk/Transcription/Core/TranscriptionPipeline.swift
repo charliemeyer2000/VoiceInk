@@ -41,6 +41,7 @@ class TranscriptionPipeline {
         audioURL: URL,
         model: any TranscriptionModel,
         session: TranscriptionSession?,
+        inMemorySamples: [Float]? = nil,
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
         onCleanup: @escaping () async -> Void,
@@ -69,6 +70,9 @@ class TranscriptionPipeline {
             var text: String
             if let session {
                 text = try await session.transcribe(audioURL: audioURL)
+            } else if let inMemorySamples, model.provider == .local {
+                logger.notice("🔄 Using in-memory commit path (skipping WAV read)")
+                text = try await serviceRegistry.transcribe(samples: inMemorySamples, model: model)
             } else {
                 text = try await serviceRegistry.transcribe(audioURL: audioURL, model: model)
             }
