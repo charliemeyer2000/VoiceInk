@@ -27,7 +27,7 @@ struct APIKeyManagementView: View {
                 .pickerStyle(.automatic)
                 .tint(.blue)
                 
-                if aiService.isAPIKeyValid && aiService.selectedProvider != .ollama {
+                if aiService.isAPIKeyValid && aiService.selectedProvider != .ollama && aiService.selectedProvider != .dflash {
                     Spacer()
                     Circle()
                         .fill(Color.green)
@@ -35,6 +35,15 @@ struct APIKeyManagementView: View {
                     Text("Connected")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                } else if aiService.selectedProvider == .dflash {
+                    Spacer()
+                    let dflashStatus = DFlashServerManager.shared.status
+                    Circle()
+                        .fill(dflashStatus == .ready ? Color.green : dflashStatus == .starting ? Color.yellow : Color.red)
+                        .frame(width: 8, height: 8)
+                    if dflashStatus == .starting {
+                        ProgressView().controlSize(.small)
+                    }
                 } else if aiService.selectedProvider == .ollama {
                     Spacer()
                     if isCheckingOllama {
@@ -107,6 +116,7 @@ struct APIKeyManagementView: View {
                     
                 } else if !aiService.availableModels.isEmpty &&
                             aiService.selectedProvider != .ollama &&
+                            aiService.selectedProvider != .dflash &&
                             aiService.selectedProvider != .custom {
                     Picker("Model", selection: Binding(
                         get: { aiService.currentModel },
@@ -116,6 +126,10 @@ struct APIKeyManagementView: View {
                             Text(model).tag(model)
                         }
                     }
+                }
+
+                if aiService.selectedProvider == .dflash {
+                    DFlashSettingsView()
                 }
 
                 if aiService.selectedProvider == .ollama {
