@@ -246,6 +246,24 @@ class AIEnhancementService: ObservableObject {
 
         try await waitForRateLimit()
 
+        // Vision path: send raw screenshots as image content blocks when the
+        // provider supports multimodal input. Falls through to the text-only
+        // path for providers that don't (Cerebras, Groq, Mistral, Ollama, etc).
+        let images = useScreenCaptureContext ? Array(screenCaptureService.lastCapturedImages.values) : []
+        let visionProviders: Set<AIProvider> = [.anthropic, .openAI, .gemini, .openRouter]
+        if !images.isEmpty, visionProviders.contains(aiService.selectedProvider) {
+            do {
+                let result = try await makeVisionRequest(
+                    systemPrompt: systemMessage,
+                    userText: formattedText,
+                    images: images
+                )
+                return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch {
+                logger.warning("Vision request failed, falling through to text-only: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         do {
             let result: String
             switch aiService.selectedProvider {
@@ -284,6 +302,88 @@ class AIEnhancementService: ObservableObject {
         } catch {
             throw EnhancementError.customError(error.localizedDescription)
         }
+    }
+
+    // MARK: - Vision (multimodal) request
+
+    /// Builds the multimodal API request directly (bypassing LLMkit's text-only
+    /// ChatMessage) when raw screenshots are available. Uses the same API key,
+    /// model, and timeout as the text-only path. Anthropic uses its native
+    /// content-block format; everything else uses OpenAI-compatible image_url.
+    private func makeVisionRequest(
+        systemPrompt: String,
+        userText: String,
+        images: [CGImage]
+    ) async throws -> String {
+        let apiKey = aiService.apiKey
+        let model = aiService.currentModel
+        let provider = aiService.selectedProvider
+
+        let imageBlocks: [[String: Any]] = images.compactMap { img in
+            guard let b64 = Self.cgImageToBase64PNG(img) else { return nil }
+            if provider == .anthropic {
+                return ["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": b64]]
+            } else {
+                return ["type": "image_url", "image_url": ["url": "data:image/png;base64,\(b64)", "detail": "low"]]
+            }
+        }
+        guard !imageBlocks.isEmpty else { throw EnhancementError.enhancementFailed }
+
+        let textBlock: [String: Any] = ["type": "text", "text": userText]
+        let userContent: [[String: Any]] = imageBlocks + [textBlock]
+
+        let body: [String: Any]
+        var request: URLRequest
+
+        if provider == .anthropic {
+            request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            body = [
+                "model": model, "max_tokens": 8192,
+                "system": systemPrompt,
+                "messages": [["role": "user", "content": userContent]]
+            ]
+        } else {
+            guard let baseURL = URL(string: provider.baseURL) else {
+                throw EnhancementError.customError("Invalid API URL")
+            }
+            request = URLRequest(url: baseURL)
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            body = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": userContent]
+                ]
+            ]
+        }
+
+        request.httpMethod = "POST"
+        request.timeoutInterval = baseTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let msg = String(data: data, encoding: .utf8) ?? "unknown"
+            throw EnhancementError.customError("Vision API: \(msg)")
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if provider == .anthropic {
+            let content = json?["content"] as? [[String: Any]]
+            return content?.first { ($0["type"] as? String) == "text" }?["text"] as? String ?? ""
+        } else {
+            let choices = json?["choices"] as? [[String: Any]]
+            let message = choices?.first?["message"] as? [String: Any]
+            return message?["content"] as? String ?? ""
+        }
+    }
+
+    private static func cgImageToBase64PNG(_ image: CGImage) -> String? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        return rep.representation(using: .png, properties: [:])?.base64EncodedString()
     }
 
     private func mapLLMKitError(_ error: LLMKitError) -> EnhancementError {
