@@ -70,9 +70,15 @@ class AIEnhancementService: ObservableObject {
     private var baseTimeout: TimeInterval {
         // Local models don't have network variability but first-call latency
         // can be high (model loading, graph compilation). Use a generous timeout.
+        // Note: when hybrid mode routes to cloud, this is overridden below.
         if aiService.selectedProvider == .dflash {
             return 30
         }
+        let stored = UserDefaults.standard.integer(forKey: "EnhancementTimeoutSeconds")
+        return stored > 0 ? TimeInterval(stored) : 7
+    }
+
+    private var cloudTimeout: TimeInterval {
         let stored = UserDefaults.standard.integer(forKey: "EnhancementTimeoutSeconds")
         return stored > 0 ? TimeInterval(stored) : 7
     }
@@ -241,6 +247,7 @@ class AIEnhancementService: ObservableObject {
         var effectiveAPIKey = aiService.apiKey
         var effectiveModel = aiService.currentModel
         var effectiveBaseURL = aiService.selectedProvider.baseURL
+        var effectiveTimeout = baseTimeout
 
         if aiService.selectedProvider == .dflash {
             let wordCount = text.split(whereSeparator: { $0.isWhitespace }).count
@@ -252,6 +259,7 @@ class AIEnhancementService: ObservableObject {
                 effectiveAPIKey = fallback.apiKey
                 effectiveModel = fallback.model
                 effectiveBaseURL = fallback.provider.baseURL
+                effectiveTimeout = cloudTimeout
                 // Use the full cloud prompt for cloud models
             } else {
                 systemMessage = Self.dflashSystemPrompt
@@ -325,7 +333,7 @@ class AIEnhancementService: ObservableObject {
                     model: effectiveModel,
                     messages: [.user(formattedText)],
                     systemPrompt: systemMessage,
-                    timeout: baseTimeout
+                    timeout: effectiveTimeout
                 )
             default:
                 guard let baseURL = URL(string: effectiveBaseURL) else {
@@ -343,7 +351,7 @@ class AIEnhancementService: ObservableObject {
                     temperature: temperature,
                     reasoningEffort: reasoningEffort,
                     extraBody: extraBody,
-                    timeout: baseTimeout
+                    timeout: effectiveTimeout
                 )
             }
             return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
