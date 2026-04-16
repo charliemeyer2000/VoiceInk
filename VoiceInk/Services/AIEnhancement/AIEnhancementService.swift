@@ -245,10 +245,9 @@ class AIEnhancementService: ObservableObject {
         if aiService.selectedProvider == .dflash {
             let wordCount = text.split(whereSeparator: { $0.isWhitespace }).count
             let threshold = UserDefaults.standard.integer(forKey: "DFlashCloudFallbackWordThreshold")
-            let effectiveThreshold = threshold > 0 ? threshold : 40
 
-            if wordCount > effectiveThreshold, let fallback = Self.resolveCloudFallback() {
-                logger.info("DFlash hybrid: \(wordCount, privacy: .public) words > \(effectiveThreshold, privacy: .public) threshold, routing to \(fallback.provider.rawValue, privacy: .public)")
+            if threshold > 0, wordCount > threshold, let fallback = Self.resolveCloudFallback() {
+                logger.info("DFlash hybrid: \(wordCount, privacy: .public) words > \(threshold, privacy: .public) threshold, routing to \(fallback.provider.rawValue, privacy: .public)")
                 effectiveProvider = fallback.provider
                 effectiveAPIKey = fallback.apiKey
                 effectiveModel = fallback.model
