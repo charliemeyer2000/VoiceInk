@@ -68,12 +68,39 @@ class AIEnhancementService: ObservableObject {
     private let screenCaptureService: ScreenCaptureService
     private let customVocabularyService: CustomVocabularyService
     private var baseTimeout: TimeInterval {
+        // Local models don't have network variability but first-call latency
+        // can be high (model loading, graph compilation). Use a generous timeout.
+        // Note: when hybrid mode routes to cloud, this is overridden below.
+        if aiService.selectedProvider == .dflash {
+            return 30
+        }
+        let stored = UserDefaults.standard.integer(forKey: "EnhancementTimeoutSeconds")
+        return stored > 0 ? TimeInterval(stored) : 7
+    }
+
+    private var cloudTimeout: TimeInterval {
         let stored = UserDefaults.standard.integer(forKey: "EnhancementTimeoutSeconds")
         return stored > 0 ? TimeInterval(stored) : 7
     }
     private let rateLimitInterval: TimeInterval = 1.0
     private var lastRequestTime: Date?
     private let modelContext: ModelContext
+
+    // Compact system prompt for local small models (4B-8B). Short enough
+    // that the model doesn't lose the plot, explicit enough to suppress
+    // explanations and multi-language hallucinations.
+    private static let dflashSystemPrompt = """
+    Fix the transcript: correct grammar, punctuation, and capitalization. \
+    Remove filler words (um, uh, like, you know, basically). \
+    When the speaker corrects themselves ("wait no", "actually", "I mean", \
+    "scratch that", "sorry not that"), remove the incorrect part and keep \
+    ONLY the correction. Example: "send to john i mean james" becomes \
+    "Send to James." \
+    Write numbers as numerals (e.g. five to 5, twenty dollars to $20). \
+    If items are listed, format as a proper list. \
+    Keep the original meaning and tone. \
+    Output ONLY the corrected text. No explanations.
+    """
     
     @Published var lastCapturedClipboard: String?
 
@@ -211,7 +238,33 @@ class AIEnhancementService: ObservableObject {
         }
 
         let formattedText = "\n<TRANSCRIPT>\n\(text)\n</TRANSCRIPT>"
-        let systemMessage = await getSystemMessage(for: mode)
+        var systemMessage = await getSystemMessage(for: mode)
+
+        // Hybrid mode: for DFlash, use local for short text, cloud for long.
+        // Short dictations are fast and free locally; long ones are faster and
+        // cleaner on cloud models. The threshold is configurable (default 40 words).
+        var effectiveProvider = aiService.selectedProvider
+        var effectiveAPIKey = aiService.apiKey
+        var effectiveModel = aiService.currentModel
+        var effectiveBaseURL = aiService.selectedProvider.baseURL
+        var effectiveTimeout = baseTimeout
+
+        if aiService.selectedProvider == .dflash {
+            let wordCount = text.split(whereSeparator: { $0.isWhitespace }).count
+            let threshold = UserDefaults.standard.integer(forKey: "DFlashCloudFallbackWordThreshold")
+
+            if threshold > 0, wordCount > threshold, let fallback = Self.resolveCloudFallback() {
+                logger.info("DFlash hybrid: \(wordCount, privacy: .public) words > \(threshold, privacy: .public) threshold, routing to \(fallback.provider.rawValue, privacy: .public)")
+                effectiveProvider = fallback.provider
+                effectiveAPIKey = fallback.apiKey
+                effectiveModel = fallback.model
+                effectiveBaseURL = fallback.provider.baseURL
+                effectiveTimeout = cloudTimeout
+                // Use the full cloud prompt for cloud models
+            } else {
+                systemMessage = Self.dflashSystemPrompt
+            }
+        }
 
         await MainActor.run {
             self.lastSystemMessageSent = systemMessage
@@ -273,32 +326,32 @@ class AIEnhancementService: ObservableObject {
 
         do {
             let result: String
-            switch aiService.selectedProvider {
+            switch effectiveProvider {
             case .anthropic:
                 result = try await AnthropicLLMClient.chatCompletion(
-                    apiKey: aiService.apiKey,
-                    model: aiService.currentModel,
+                    apiKey: effectiveAPIKey,
+                    model: effectiveModel,
                     messages: [.user(formattedText)],
                     systemPrompt: systemMessage,
-                    timeout: baseTimeout
+                    timeout: effectiveTimeout
                 )
             default:
-                guard let baseURL = URL(string: aiService.selectedProvider.baseURL) else {
-                    throw EnhancementError.customError("\(aiService.selectedProvider.rawValue) has an invalid API endpoint URL. Please update it in AI settings.")
+                guard let baseURL = URL(string: effectiveBaseURL) else {
+                    throw EnhancementError.customError("\(effectiveProvider.rawValue) has an invalid API endpoint URL. Please update it in AI settings.")
                 }
-                let temperature = aiService.currentModel.lowercased().hasPrefix("gpt-5") ? 1.0 : 0.3
-                let reasoningEffort = ReasoningConfig.getReasoningParameter(for: aiService.currentModel)
-                let extraBody = ReasoningConfig.getExtraBodyParameters(for: aiService.currentModel)
+                let temperature = effectiveModel.lowercased().hasPrefix("gpt-5") ? 1.0 : 0.3
+                let reasoningEffort = ReasoningConfig.getReasoningParameter(for: effectiveModel)
+                let extraBody = ReasoningConfig.getExtraBodyParameters(for: effectiveModel)
                 result = try await OpenAILLMClient.chatCompletion(
                     baseURL: baseURL,
-                    apiKey: aiService.apiKey,
-                    model: aiService.currentModel,
+                    apiKey: effectiveAPIKey,
+                    model: effectiveModel,
                     messages: [.user(formattedText)],
                     systemPrompt: systemMessage,
                     temperature: temperature,
                     reasoningEffort: reasoningEffort,
                     extraBody: extraBody,
-                    timeout: baseTimeout
+                    timeout: effectiveTimeout
                 )
             }
             return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -312,6 +365,35 @@ class AIEnhancementService: ObservableObject {
     }
 
     // MARK: - Vision (multimodal) request
+
+    // MARK: - DFlash hybrid cloud fallback
+
+    private struct CloudFallback {
+        let provider: AIProvider
+        let apiKey: String
+        let model: String
+    }
+
+    /// Find the fastest available cloud provider that has an API key configured.
+    /// Priority: fast inference providers first (Gemini, Groq, Cerebras), then
+    /// general-purpose (OpenRouter, OpenAI), then Anthropic.
+    private static func resolveCloudFallback() -> CloudFallback? {
+        let priorityOrder: [(AIProvider, String)] = [
+            (.gemini, "gemini-2.5-flash-lite"),
+            (.groq, "openai/gpt-oss-120b"),
+            (.cerebras, "gpt-oss-120b"),
+            (.openRouter, "google/gemini-2.5-flash-lite"),
+            (.openAI, "gpt-4.1-nano"),
+            (.anthropic, "claude-haiku-4-5"),
+            (.mistral, "mistral-small-latest"),
+        ]
+        for (provider, defaultModel) in priorityOrder {
+            if let key = APIKeyManager.shared.getAPIKey(forProvider: provider.rawValue) {
+                return CloudFallback(provider: provider, apiKey: key, model: defaultModel)
+            }
+        }
+        return nil
+    }
 
     /// Builds the multimodal API request directly (bypassing LLMkit's text-only
     /// ChatMessage) when raw screenshots are available. Uses the same API key,
