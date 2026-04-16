@@ -5,6 +5,7 @@ struct DFlashSettingsView: View {
     @ObservedObject private var registry = DFlashModelRegistry.shared
     @AppStorage("dflashSelectedModel") private var selectedModelID: String = "qwen3.5-4b"
     @AppStorage("dflashAutoStart") private var autoStart: Bool = true
+    @AppStorage("DFlashCloudFallbackWordThreshold") private var cloudThreshold: Int = 40
 
     private var selectedModel: DFlashModel {
         DFlashModelRegistry.model(forID: selectedModelID) ?? DFlashModelRegistry.supportedModels[0]
@@ -61,6 +62,27 @@ struct DFlashSettingsView: View {
             Toggle("Start when VoiceInk launches", isOn: $autoStart)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
+
+            // Hybrid cloud fallback
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Cloud fallback for long dictations")
+                        .font(.subheadline)
+                    Spacer()
+                    Picker("", selection: $cloudThreshold) {
+                        Text("Off").tag(0)
+                        Text("> 20 words").tag(20)
+                        Text("> 40 words").tag(40)
+                        Text("> 60 words").tag(60)
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 140)
+                }
+                Text("Short dictations use local DFlash (free). Longer ones route to the fastest cloud provider with a saved API key.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 

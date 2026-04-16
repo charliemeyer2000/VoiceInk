@@ -74,6 +74,8 @@ enum AppDefaults {
             // process starts automatically on app launch.
             "dflashAutoStart": true,
             "dflashSelectedModel": "qwen3.5-4b",
+            // Hybrid mode: route long dictations to cloud. 0 = disabled.
+            "DFlashCloudFallbackWordThreshold": 40,
 
         ])
     }
