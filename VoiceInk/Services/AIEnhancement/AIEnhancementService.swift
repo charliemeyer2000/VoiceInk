@@ -156,7 +156,12 @@ class AIEnhancementService: ObservableObject {
     }
 
     var isConfigured: Bool {
-        aiService.isAPIKeyValid
+        // DFlash has no API key; its "configured" signal is the live server status.
+        // Reading it directly avoids a notification-timing race with isAPIKeyValid.
+        if aiService.selectedProvider == .dflash {
+            return DFlashServerManager.shared.status == .ready
+        }
+        return aiService.isAPIKeyValid
     }
 
     private func waitForRateLimit() async throws {
@@ -368,28 +373,36 @@ class AIEnhancementService: ObservableObject {
 
     // MARK: - DFlash hybrid cloud fallback
 
-    private struct CloudFallback {
+    struct CloudFallback {
         let provider: AIProvider
         let apiKey: String
         let model: String
     }
 
-    /// Find the fastest available cloud provider that has an API key configured.
-    /// Priority: fast inference providers first (Gemini, Groq, Cerebras), then
-    /// general-purpose (OpenRouter, OpenAI), then Anthropic.
-    private static func resolveCloudFallback() -> CloudFallback? {
-        let priorityOrder: [(AIProvider, String)] = [
-            (.gemini, "gemini-2.5-flash-lite"),
-            (.groq, "openai/gpt-oss-120b"),
-            (.cerebras, "gpt-oss-120b"),
-            (.openRouter, "google/gemini-2.5-flash-lite"),
-            (.openAI, "gpt-4.1-nano"),
-            (.anthropic, "claude-haiku-4-5"),
-            (.mistral, "mistral-small-latest"),
-        ]
-        for (provider, defaultModel) in priorityOrder {
-            if let key = APIKeyManager.shared.getAPIKey(forProvider: provider.rawValue) {
-                return CloudFallback(provider: provider, apiKey: key, model: defaultModel)
+    /// Priority list for the hybrid cloud fallback, fastest first. The UI
+    /// picker uses this as its option set.
+    static let cloudFallbackPriority: [(provider: AIProvider, model: String)] = [
+        (.gemini, "gemini-2.5-flash-lite"),
+        (.groq, "openai/gpt-oss-120b"),
+        (.cerebras, "gpt-oss-120b"),
+        (.openRouter, "google/gemini-2.5-flash-lite"),
+        (.openAI, "gpt-4.1-nano"),
+        (.anthropic, "claude-haiku-4-5"),
+        (.mistral, "mistral-small-latest"),
+    ]
+
+    /// Returns the user's explicit choice (if its key is present), otherwise
+    /// the first provider in `cloudFallbackPriority` that has a saved key.
+    static func resolveCloudFallback() -> CloudFallback? {
+        let preferred = UserDefaults.standard.string(forKey: "dflashCloudFallbackProvider") ?? ""
+        if !preferred.isEmpty,
+           let entry = cloudFallbackPriority.first(where: { $0.provider.rawValue == preferred }),
+           let key = APIKeyManager.shared.getAPIKey(forProvider: entry.provider.rawValue) {
+            return CloudFallback(provider: entry.provider, apiKey: key, model: entry.model)
+        }
+        for entry in cloudFallbackPriority {
+            if let key = APIKeyManager.shared.getAPIKey(forProvider: entry.provider.rawValue) {
+                return CloudFallback(provider: entry.provider, apiKey: key, model: entry.model)
             }
         }
         return nil
