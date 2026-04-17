@@ -76,6 +76,9 @@ enum AppDefaults {
             "dflashSelectedModel": "qwen3.5-4b",
             // Hybrid mode: route long dictations to cloud. 0 = disabled.
             "DFlashCloudFallbackWordThreshold": 40,
+            // Empty string = auto-pick the fastest available cloud provider.
+            // Otherwise, an AIProvider.rawValue to force that provider.
+            "dflashCloudFallbackProvider": "",
 
         ])
     }

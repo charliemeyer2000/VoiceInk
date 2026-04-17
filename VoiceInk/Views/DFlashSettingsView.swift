@@ -6,6 +6,7 @@ struct DFlashSettingsView: View {
     @AppStorage("dflashSelectedModel") private var selectedModelID: String = "qwen3.5-4b"
     @AppStorage("dflashAutoStart") private var autoStart: Bool = true
     @AppStorage("DFlashCloudFallbackWordThreshold") private var cloudThreshold: Int = 40
+    @AppStorage("dflashCloudFallbackProvider") private var cloudProviderChoice: String = ""
 
     private var selectedModel: DFlashModel {
         DFlashModelRegistry.model(forID: selectedModelID) ?? DFlashModelRegistry.supportedModels[0]
@@ -79,11 +80,52 @@ struct DFlashSettingsView: View {
                     .pickerStyle(.menu)
                     .frame(width: 140)
                 }
-                Text("Short dictations use local DFlash (free). Longer ones route to the fastest cloud provider with a saved API key.")
+
+                if cloudThreshold > 0 {
+                    HStack {
+                        Text("Provider")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Picker("", selection: $cloudProviderChoice) {
+                            Text("Auto (fastest available)").tag("")
+                            ForEach(availableCloudProviders, id: \.provider.rawValue) { entry in
+                                Text("\(entry.provider.rawValue) (\(entry.model))").tag(entry.provider.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 220)
+                    }
+
+                    if let active = activeFallbackLabel {
+                        Text("Active: \(active)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("No cloud provider with a saved API key — long dictations will stay local.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                }
+
+                Text("Short dictations use local DFlash (free). Longer ones route to the selected cloud provider.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    // MARK: - Cloud fallback helpers
+
+    private var availableCloudProviders: [(provider: AIProvider, model: String)] {
+        AIEnhancementService.cloudFallbackPriority.filter {
+            APIKeyManager.shared.hasAPIKey(forProvider: $0.provider.rawValue)
+        }
+    }
+
+    private var activeFallbackLabel: String? {
+        guard let resolved = AIEnhancementService.resolveCloudFallback() else { return nil }
+        return "\(resolved.provider.rawValue) (\(resolved.model))"
     }
 
     // MARK: - Status Indicator
