@@ -268,6 +268,10 @@ class AIEnhancementService: ObservableObject {
                 // Use the full cloud prompt for cloud models
             } else {
                 systemMessage = Self.dflashSystemPrompt
+                // LLMkit's validateAPIKey rejects empty strings with
+                // LLMKitError.missingAPIKey. dflash-serve ignores auth
+                // headers, so any non-empty string works.
+                effectiveAPIKey = "dflash-local"
             }
         }
 
