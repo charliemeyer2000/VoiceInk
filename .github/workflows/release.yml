@@ -39,6 +39,33 @@ jobs:
           DMG_PATH="VoiceInk.dmg"
           hdiutil create -volname "VoiceInk" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
 
+      - name: Sign DMG for Sparkle
+        id: sign
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # sign_update ships inside the Sparkle SPM artifact bundle that
+          # `make local` resolved into .local-build. Locate it dynamically so
+          # we don't break when Sparkle gets bumped.
+          SIGN_UPDATE=$(find .local-build/SourcePackages/artifacts -name sign_update -type f | head -1)
+          if [ -z "$SIGN_UPDATE" ]; then
+            echo "ERROR: sign_update not found in resolved SPM artifacts" >&2
+            exit 1
+          fi
+          PRIV=$(mktemp -u)
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$PRIV"
+          # sign_update emits e.g.: sparkle:edSignature="..." length="..."
+          SIG_LINE=$("$SIGN_UPDATE" -f "$PRIV" VoiceInk.dmg)
+          rm -f "$PRIV"
+          ED_SIG=$(echo "$SIG_LINE" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+          if [ -z "$ED_SIG" ]; then
+            echo "ERROR: failed to parse edSignature from sign_update output: $SIG_LINE" >&2
+            exit 1
+          fi
+          echo "edsig=$ED_SIG" >> "$GITHUB_OUTPUT"
+          echo "Signed VoiceInk.dmg"
+
       - name: Determine version
         id: version
         run: |
@@ -91,3 +118,80 @@ jobs:
           git add "nix/versions/${VERSION}.json"
           git commit -m "chore(nix): update version to ${TAG} [skip ci]" || true
           git push origin HEAD:main || true
+
+      - name: Read app version metadata
+        id: appmeta
+        run: |
+          set -euo pipefail
+          APP_PLIST="$HOME/Downloads/VoiceInk.app/Contents/Info.plist"
+          SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+          MIN_SYS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP_PLIST" 2>/dev/null || echo "14.4")
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "min_sys=$MIN_SYS" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes for appcast
+        id: notes
+        run: |
+          set -euo pipefail
+          # Pick the previous fork tag (clean, no '+' chain) to bound the changelog.
+          PREV=$(git tag -l 'v[0-9]*+*' --sort=-version:refname | sed -n '2p')
+          if [ -z "$PREV" ]; then
+            PREV=$(git tag -l 'v[0-9]*' --sort=-version:refname | grep -v '+' | head -1)
+          fi
+          NOTES_FILE=appcast-notes.txt
+          if [ -n "$PREV" ]; then
+            git log "${PREV}..HEAD" --no-merges --pretty=format:'%s' > "$NOTES_FILE"
+          else
+            git log -n 20 --no-merges --pretty=format:'%s' > "$NOTES_FILE"
+          fi
+          # Always carry at least one bullet so the popup body isn't empty.
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "Fork build" > "$NOTES_FILE"
+          fi
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch published appcast
+        run: |
+          set -euo pipefail
+          mkdir -p .appcast
+          # Pull the live feed so we prepend instead of starting fresh on every release.
+          if curl -fsSL -o .appcast/appcast.xml \
+              "https://charliemeyer2000.github.io/VoiceInk/appcast.xml"; then
+            echo "Fetched existing appcast."
+          else
+            echo "No published appcast yet — will start a fresh feed."
+            rm -f .appcast/appcast.xml
+          fi
+
+      - name: Update appcast
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHORT: ${{ steps.appmeta.outputs.short }}
+          BUILD: ${{ steps.appmeta.outputs.build }}
+          MIN_SYS: ${{ steps.appmeta.outputs.min_sys }}
+          ED_SIG: ${{ steps.sign.outputs.edsig }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/charliemeyer2000/VoiceInk/releases/download/${TAG}/VoiceInk.dmg"
+          python3 scripts/update_appcast.py \
+            --appcast .appcast/appcast.xml \
+            --tag "$TAG" \
+            --short-version "$SHORT" \
+            --sparkle-version "$BUILD" \
+            --dmg-path VoiceInk.dmg \
+            --url "$URL" \
+            --signature "$ED_SIG" \
+            --notes-file "$NOTES_FILE" \
+            --min-system "$MIN_SYS"
+
+      - name: Deploy appcast to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.PAT }}
+          publish_dir: ./.appcast
+          publish_branch: gh-pages
+          keep_files: true
+          commit_message: "chore(appcast): publish ${{ steps.version.outputs.tag }}"
