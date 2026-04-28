@@ -45,8 +45,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.version }}"
           else
-            LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-version:refname | head -1)
-            BASE="${LATEST_TAG:-v0.0.0}"
+            # Pick the latest clean upstream-style tag (no '+' suffix) so we don't
+            # chain '+sha+sha+sha' across releases. Falls back to v0.0.0 if none.
+            BASE=$(git tag -l 'v[0-9]*' --sort=-version:refname | grep -v '+' | head -1)
+            BASE="${BASE:-v0.0.0}"
             SHORT_SHA=$(git rev-parse --short HEAD)
             TAG="${BASE}+${SHORT_SHA}"
           fi

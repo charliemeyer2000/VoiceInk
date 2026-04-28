@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: Beingpax/VoiceInk
+  RERERE_BRANCH: sync/rerere-cache
+  CONFLICT_LABEL: upstream-sync
 
 jobs:
   sync:
@@ -22,10 +28,24 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+
+      - name: Restore rerere cache
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code origin "refs/heads/${RERERE_BRANCH}" >/dev/null 2>&1; then
+            echo "Restoring rerere cache from ${RERERE_BRANCH}."
+            git fetch origin "${RERERE_BRANCH}:refs/remotes/origin/${RERERE_BRANCH}"
+            mkdir -p .git/rr-cache
+            git archive "origin/${RERERE_BRANCH}" | tar -x -C .git/rr-cache
+          else
+            echo "No rerere cache branch yet."
+          fi
 
       - name: Fetch upstream
         run: |
-          git remote add upstream https://github.com/Beingpax/VoiceInk.git
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
           git fetch upstream main --tags
 
       - name: Check for new upstream commits
@@ -40,6 +60,7 @@ jobs:
           else
             COUNT=$(git rev-list "$FORK_BASE".."$UPSTREAM_HEAD" --count)
             echo "Found $COUNT new upstream commit(s)."
+            echo "count=$COUNT" >> "$GITHUB_OUTPUT"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -50,6 +71,7 @@ jobs:
           if git rebase upstream/main; then
             echo "Rebase succeeded."
             git push --force-with-lease origin main
+            git push origin --tags
             echo "synced=true" >> "$GITHUB_OUTPUT"
           else
             echo "Rebase failed — conflicts detected."
@@ -57,48 +79,157 @@ jobs:
             echo "synced=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Tag fork release
-        if: steps.rebase.outputs.synced == 'true'
+      - name: Persist rerere cache
+        if: always() && hashFiles('.git/rr-cache/**') != ''
         run: |
-          # Use latest upstream version tag + .1 suffix for fork builds
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-version:refname | head -1)
-          FORK_TAG="${LATEST_TAG}.1"
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          cp -R .git/rr-cache/. "$TMP/"
 
-          if git rev-parse "$FORK_TAG" >/dev/null 2>&1; then
-            echo "Tag $FORK_TAG already exists, skipping."
-          else
-            echo "Creating fork tag: $FORK_TAG"
-            git tag "$FORK_TAG"
-            git push origin "$FORK_TAG"
-          fi
+          git worktree add --detach /tmp/rerere
+          (
+            cd /tmp/rerere
+            if git ls-remote --exit-code origin "refs/heads/${RERERE_BRANCH}" >/dev/null 2>&1; then
+              git fetch origin "${RERERE_BRANCH}"
+              git checkout -B "${RERERE_BRANCH}" "origin/${RERERE_BRANCH}"
+            else
+              git checkout --orphan "${RERERE_BRANCH}"
+            fi
+            # Empty the worktree (preserve .git), then drop in the rerere cache.
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+            cp -R "$TMP/." .
+            git add -A
+            if git diff --cached --quiet; then
+              echo "No rerere changes to persist."
+            else
+              git commit -m "chore: update rerere cache"
+              git push -u origin "${RERERE_BRANCH}"
+            fi
+          )
+          git worktree remove --force /tmp/rerere
 
-      - name: Open PR on conflict
+      - name: Create or update conflict PR + tracking issue
         if: steps.check.outputs.has_changes == 'true' && steps.rebase.outputs.synced == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT }}
+          UPSTREAM_COUNT: ${{ steps.check.outputs.count }}
         run: |
-          BRANCH="sync/upstream-$(date +%Y%m%d)"
+          set -euo pipefail
 
-          git checkout -b "$BRANCH" origin/main
-          git merge upstream/main --no-edit || true
+          # Ensure label exists.
+          gh label create "${CONFLICT_LABEL}" \
+            --color "d73a4a" \
+            --description "Upstream sync requires manual conflict resolution" \
+            >/dev/null 2>&1 || true
+
+          # Reuse open conflict PR if one exists; otherwise create a fresh dated branch.
+          EXISTING_PR=$(gh pr list \
+            --state open \
+            --label "${CONFLICT_LABEL}" \
+            --json number,headRefName \
+            --jq '.[0]' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
+            BRANCH=$(echo "$EXISTING_PR" | jq -r .headRefName)
+            PR_NUMBER=$(echo "$EXISTING_PR" | jq -r .number)
+            echo "Reusing existing conflict PR #${PR_NUMBER} on branch ${BRANCH}."
+            git fetch origin "${BRANCH}:${BRANCH}"
+            git checkout "${BRANCH}"
+            # Refresh the branch from origin/main + upstream so the PR reflects today's state.
+            git reset --hard origin/main
+          else
+            BRANCH="sync/upstream-$(date +%Y%m%d)"
+            PR_NUMBER=""
+            git checkout -b "${BRANCH}" origin/main
+          fi
+
+          # Attempt merge to surface conflicts in-tree. Capture conflict list BEFORE committing.
+          git merge upstream/main --no-edit --no-commit || true
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          if [ -z "$CONFLICTS" ]; then
+            CONFLICTS="(no path-level conflicts detected — see diff)"
+          fi
           git add -A
           git commit -m "chore: merge upstream (conflicts need resolution)" || true
-          git push origin "$BRANCH"
+          git push --force-with-lease origin "${BRANCH}"
 
-          gh pr create \
-            --title "chore: sync with upstream (conflicts)" \
-            --body "$(cat <<'EOF'
+          PR_BODY=$(cat <<EOF
           ## Upstream Sync — Manual Resolution Required
 
-          Automatic rebase of fork commits onto upstream/main failed due to conflicts.
+          Automatic rebase of fork commits onto \`upstream/main\` failed.
 
-          **Steps to resolve:**
-          1. Check out this branch locally
-          2. Resolve conflicts, then rebase onto upstream: `git rebase upstream/main`
-          3. Force-push the result to `main`
+          - Upstream: https://github.com/${UPSTREAM_REPO}
+          - Commits behind: **${UPSTREAM_COUNT}**
+          - Sync branch: \`${BRANCH}\`
 
-          Upstream: https://github.com/Beingpax/VoiceInk
+          ### Conflicting paths
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
+
+          ### How to resolve
+          1. \`git fetch origin && git checkout ${BRANCH}\`
+          2. Resolve conflicts (rerere will replay any prior resolutions)
+          3. Re-merge: \`git merge upstream/main\`
+          4. Force-push back to \`${BRANCH}\` and merge this PR
+
+          Resolutions are persisted to \`${RERERE_BRANCH}\` so future syncs replay them automatically.
           EOF
-          )" \
-            --base main \
-            --head "$BRANCH"
+          )
+          # Strip the leading 10 spaces of indentation that the YAML run-block forces.
+          PR_BODY=$(printf '%s\n' "$PR_BODY" | sed 's/^          //')
+
+          if [ -z "$PR_NUMBER" ]; then
+            PR_URL=$(gh pr create \
+              --title "chore: sync with upstream (conflicts)" \
+              --body "$PR_BODY" \
+              --base main \
+              --head "$BRANCH" \
+              --label "${CONFLICT_LABEL}")
+            PR_NUMBER=$(basename "$PR_URL")
+          else
+            gh pr edit "$PR_NUMBER" --body "$PR_BODY" >/dev/null
+          fi
+
+          # Idempotent tracking issue: open or update the single issue with the conflict label.
+          ISSUE_NUMBER=$(gh issue list \
+            --state open \
+            --label "${CONFLICT_LABEL}" \
+            --json number \
+            --jq '.[0].number' 2>/dev/null || echo "")
+
+          ISSUE_BODY=$(cat <<EOF
+          Tracking conflict resolution for upstream sync.
+
+          - PR: #${PR_NUMBER}
+          - Branch: \`${BRANCH}\`
+          - Commits behind upstream: **${UPSTREAM_COUNT}**
+
+          See the PR for the file list and resolution steps.
+          EOF
+          )
+          ISSUE_BODY=$(printf '%s\n' "$ISSUE_BODY" | sed 's/^          //')
+
+          if [ -z "$ISSUE_NUMBER" ] || [ "$ISSUE_NUMBER" = "null" ]; then
+            gh issue create \
+              --title "Upstream sync conflict — ${UPSTREAM_COUNT} commits behind" \
+              --body "$ISSUE_BODY" \
+              --label "${CONFLICT_LABEL}" >/dev/null
+          else
+            gh issue edit "$ISSUE_NUMBER" \
+              --title "Upstream sync conflict — ${UPSTREAM_COUNT} commits behind" \
+              --body "$ISSUE_BODY" >/dev/null
+          fi
+
+      - name: Close stale conflict tracking on clean sync
+        if: steps.rebase.outputs.synced == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list --state open --label "${CONFLICT_LABEL}" --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "Resolved by clean upstream sync." || true
+          done
+          for n in $(gh pr list --state open --label "${CONFLICT_LABEL}" --json number --jq '.[].number'); do
+            gh pr close "$n" --delete-branch --comment "Superseded by clean upstream sync." || true
+          done
