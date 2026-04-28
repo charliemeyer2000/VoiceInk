@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>VoiceInk (charliemeyer2000 fork)</title>
+        <item>
+            <title>v1.73.2+2236135</title>
+            <pubDate>Tue, 28 Apr 2026 00:17:06 +0000</pubDate>
+            <sparkle:version>173</sparkle:version>
+            <sparkle:shortVersionString>1.73</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.4</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Fork build v1.73.2+2236135</h3>
+                <ul>
+                    <li>chore(nix): update version to v1.73.2+2236135 [skip ci]</li>
+                    <li>feat(sparkle): self-hosted appcast feed for fork builds (#21)</li>
+                    <li>chore(nix): update version to v1.73.2+9163c1b [skip ci]</li>
+                </ul>
+            ]]></description>
+            <enclosure url="https://github.com/charliemeyer2000/VoiceInk/releases/download/v1.73.2+2236135/VoiceInk.dmg" length="19642617" type="application/octet-stream" sparkle:edSignature="FykCIc4J4LtubalBLKJlLuZ9UeUVlL2AmBkEkmaGvCC+wq2vnOqHn0VBbGWr9CZxUiUZZQ2OXB0/60ZYgbdFBQ=="/>
+        </item>
+    </channel>
+</rss>
