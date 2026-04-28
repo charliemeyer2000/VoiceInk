@@ -7,8 +7,12 @@ struct ModelSettingsView: View {
     @AppStorage("IsVADEnabled") private var isVADEnabled = true
     @AppStorage("AppendTrailingSpace") private var appendTrailingSpace = true
     @AppStorage("PrewarmModelOnWake") private var prewarmModelOnWake = true
+<<<<<<< HEAD
     @AppStorage("KeepWhisperModelLoaded") private var keepWhisperModelLoaded = true
     @AppStorage("WhisperThreadCount") private var whisperThreadCount = 0
+=======
+    @AppStorage("showLiveTextPreview") private var showLiveTextPreview = true
+>>>>>>> upstream/main
     @State private var customPrompt: String = ""
     @State private var isEditing: Bool = false
 
@@ -79,10 +83,17 @@ struct ModelSettingsView: View {
                 }
                 .toggleStyle(.switch)
 
+<<<<<<< HEAD
                 Toggle(isOn: $keepWhisperModelLoaded) {
                     HStack(spacing: 4) {
                         Text("Keep model loaded in memory")
                         InfoTip("Keeps the Whisper model resident between transcriptions so subsequent recordings start instantly. Turn off if you need to free RAM between dictations.")
+=======
+                Toggle(isOn: $showLiveTextPreview) {
+                    HStack(spacing: 4) {
+                        Text("Show Live Text Preview")
+                        InfoTip("Displays the live transcript preview in the recorder while speaking. Only applies when using real-time streaming models.")
+>>>>>>> upstream/main
                     }
                 }
                 .toggleStyle(.switch)
