@@ -23,8 +23,11 @@ enum AppDefaults {
             "IsTextFormattingEnabled": true,
             "IsVADEnabled": true,
             "RemoveFillerWords": true,
+            "RemovePunctuation": false,
+            "LowercaseTranscription": false,
             "SelectedLanguage": "en",
             "AppendTrailingSpace": true,
+            "showLiveTextPreview": false,
             "RecorderType": "mini",
 
             // Cleanup
@@ -35,13 +38,12 @@ enum AppDefaults {
 
             // UI & Behavior
             "IsMenuBarOnly": false,
-            "powerModeAutoRestoreEnabled": false,
+            "powerModePersistConfig": false,
             // Hotkey
             "isMiddleClickToggleEnabled": false,
             "middleClickActivationDelay": 200,
 
             // Enhancement
-            "isToggleEnhancementShortcutEnabled": true,
             "SkipShortEnhancement": true,
             "ShortEnhancementWordThreshold": 3,
             "EnhancementTimeoutSeconds": 7,

@@ -9,6 +9,9 @@ struct ApplicationState: Codable {
     var selectedAIModel: String?
     var selectedLanguage: String?
     var transcriptionModelName: String?
+    var isTextFormattingEnabled: Bool?
+    var removePunctuation: Bool?
+    var lowercaseTranscription: Bool?
 }
 
 struct PowerModeSession: Codable {
@@ -51,7 +54,10 @@ class PowerModeSessionManager {
                 selectedAIProvider: enhancementService.getAIService()?.selectedProvider.rawValue,
                 selectedAIModel: enhancementService.getAIService()?.currentModel,
                 selectedLanguage: UserDefaults.standard.string(forKey: "SelectedLanguage"),
-                transcriptionModelName: stateProvider.currentTranscriptionModel?.name
+                transcriptionModelName: stateProvider.currentTranscriptionModel?.name,
+                isTextFormattingEnabled: UserDefaults.standard.bool(forKey: "IsTextFormattingEnabled"),
+                removePunctuation: UserDefaults.standard.bool(forKey: "RemovePunctuation"),
+                lowercaseTranscription: UserDefaults.standard.bool(forKey: "LowercaseTranscription")
             )
 
             let newSession = PowerModeSession(
@@ -100,7 +106,10 @@ class PowerModeSessionManager {
             selectedAIProvider: enhancementService.getAIService()?.selectedProvider.rawValue,
             selectedAIModel: enhancementService.getAIService()?.currentModel,
             selectedLanguage: UserDefaults.standard.string(forKey: "SelectedLanguage"),
-            transcriptionModelName: stateProvider.currentTranscriptionModel?.name
+            transcriptionModelName: stateProvider.currentTranscriptionModel?.name,
+            isTextFormattingEnabled: UserDefaults.standard.bool(forKey: "IsTextFormattingEnabled"),
+            removePunctuation: UserDefaults.standard.bool(forKey: "RemovePunctuation"),
+            lowercaseTranscription: UserDefaults.standard.bool(forKey: "LowercaseTranscription")
         )
 
         session.originalState = updatedState
@@ -134,6 +143,10 @@ class PowerModeSessionManager {
                 UserDefaults.standard.set(language, forKey: "SelectedLanguage")
                 NotificationCenter.default.post(name: .languageDidChange, object: nil)
             }
+
+            UserDefaults.standard.set(config.isTextFormattingEnabled, forKey: "IsTextFormattingEnabled")
+            UserDefaults.standard.set(config.removePunctuation, forKey: "RemovePunctuation")
+            UserDefaults.standard.set(config.lowercaseTranscription, forKey: "LowercaseTranscription")
         }
 
         if let modelName = config.selectedTranscriptionModelName,
@@ -169,6 +182,16 @@ class PowerModeSessionManager {
                 UserDefaults.standard.set(language, forKey: "SelectedLanguage")
                 NotificationCenter.default.post(name: .languageDidChange, object: nil)
             }
+
+            if let isTextFormattingEnabled = state.isTextFormattingEnabled {
+                UserDefaults.standard.set(isTextFormattingEnabled, forKey: "IsTextFormattingEnabled")
+            }
+            if let removePunctuation = state.removePunctuation {
+                UserDefaults.standard.set(removePunctuation, forKey: "RemovePunctuation")
+            }
+            if let lowercaseTranscription = state.lowercaseTranscription {
+                UserDefaults.standard.set(lowercaseTranscription, forKey: "LowercaseTranscription")
+            }
         }
 
         if let modelName = state.transcriptionModelName,
@@ -184,13 +207,13 @@ class PowerModeSessionManager {
         await stateProvider.setDefaultTranscriptionModel(newModel)
 
         switch newModel.provider {
-        case .local:
+        case .whisper:
             await stateProvider.cleanupModelResources()
-            if let localModel = await stateProvider.availableModels.first(where: { $0.name == newModel.name }) {
+            if let whisperModel = await stateProvider.availableModels.first(where: { $0.name == newModel.name }) {
                 do {
-                    try await stateProvider.loadModel(localModel)
+                    try await stateProvider.loadModel(whisperModel)
                 } catch {
-                    print("Power Mode: Failed to load local model '\(localModel.name)': \(error)")
+                    print("Power Mode: Failed to load local model '\(whisperModel.name)': \(error)")
                 }
             }
         case .fluidAudio:
