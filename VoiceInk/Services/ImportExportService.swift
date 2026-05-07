@@ -26,6 +26,8 @@ struct GeneralSettings: Codable {
     let isPauseMediaEnabled: Bool?
     let audioResumptionDelay: Double?
     let isTextFormattingEnabled: Bool?
+    let removePunctuation: Bool?
+    let lowercaseTranscription: Bool?
     let isExperimentalFeaturesEnabled: Bool?
     let restoreClipboardAfterPaste: Bool?
     let clipboardRestoreDelay: Double?
@@ -65,6 +67,8 @@ class ImportExportService {
     private let keyIsSoundFeedbackEnabled = "isSoundFeedbackEnabled"
     private let keyIsSystemMuteEnabled = "isSystemMuteEnabled"
     private let keyIsTextFormattingEnabled = "IsTextFormattingEnabled"
+    private let keyRemovePunctuation = "RemovePunctuation"
+    private let keyLowercaseTranscription = "LowercaseTranscription"
 
     private init() {
         if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
@@ -84,7 +88,7 @@ class ImportExportService {
         let powerConfigs = powerModeManager.configurations
 
         // Export custom models
-        let customModels = CustomModelManager.shared.customModels
+        let customModels = CustomCloudModelManager.shared.customModels
 
         // Fetch vocabulary words from SwiftData
         var exportedDictionaryItems: [VocabularyWordData]? = nil
@@ -121,6 +125,8 @@ class ImportExportService {
             isPauseMediaEnabled: playbackController.isPauseMediaEnabled,
             audioResumptionDelay: mediaController.audioResumptionDelay,
             isTextFormattingEnabled: UserDefaults.standard.bool(forKey: keyIsTextFormattingEnabled),
+            removePunctuation: UserDefaults.standard.bool(forKey: keyRemovePunctuation),
+            lowercaseTranscription: UserDefaults.standard.bool(forKey: keyLowercaseTranscription),
             isExperimentalFeaturesEnabled: UserDefaults.standard.bool(forKey: "isExperimentalFeaturesEnabled"),
             restoreClipboardAfterPaste: UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste"),
             clipboardRestoreDelay: UserDefaults.standard.double(forKey: "clipboardRestoreDelay"),
@@ -204,7 +210,7 @@ class ImportExportService {
 
                     // Import Custom Models
                     if let modelsToImport = importedSettings.customCloudModels {
-                        let customModelManager = CustomModelManager.shared
+                        let customModelManager = CustomCloudModelManager.shared
                         customModelManager.customModels = modelsToImport
                         customModelManager.saveCustomModels() // Ensure they are persisted
                         transcriptionModelManager.refreshAllAvailableModels() // Refresh the UI
@@ -342,6 +348,12 @@ class ImportExportService {
                         }
                         if let textFormattingEnabled = general.isTextFormattingEnabled {
                             UserDefaults.standard.set(textFormattingEnabled, forKey: self.keyIsTextFormattingEnabled)
+                        }
+                        if let removePunctuation = general.removePunctuation {
+                            UserDefaults.standard.set(removePunctuation, forKey: self.keyRemovePunctuation)
+                        }
+                        if let lowercaseTranscription = general.lowercaseTranscription {
+                            UserDefaults.standard.set(lowercaseTranscription, forKey: self.keyLowercaseTranscription)
                         }
                         if let restoreClipboard = general.restoreClipboardAfterPaste {
                             UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboardAfterPaste")
