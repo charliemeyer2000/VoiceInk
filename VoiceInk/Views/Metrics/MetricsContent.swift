@@ -12,6 +12,8 @@ struct MetricsContent: View {
     @State private var totalDuration: TimeInterval = 0
     @State private var isLoadingMetrics: Bool = true
     @State private var metricsTask: Task<Void, Never>?
+    @State private var isModelStatsPanelPresented = false
+    @State private var isAccessibilityEnabled = AXIsProcessTrusted()
 
     var body: some View {
         Group {
@@ -24,6 +26,10 @@ struct MetricsContent: View {
                 GeometryReader { geometry in
                     ScrollView {
                         VStack(spacing: 24) {
+                            if !isAccessibilityEnabled {
+                                accessibilityPermissionCallout
+                            }
+
                             heroSection
                             metricsSection
                             HStack(alignment: .top, spacing: 18) {
@@ -49,19 +55,11 @@ struct MetricsContent: View {
         .task {
             await loadMetricsEfficiently()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .transcriptionCreated)) { _ in
-            metricsTask?.cancel()
-            metricsTask = Task {
-                await loadMetricsEfficiently()
-            }
+        .onAppear(perform: refreshAccessibilityStatus)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshAccessibilityStatus()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .transcriptionCompleted)) { _ in
-            metricsTask?.cancel()
-            metricsTask = Task {
-                await loadMetricsEfficiently()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .transcriptionDeleted)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sessionMetricsDidChange)) { _ in
             metricsTask?.cancel()
             metricsTask = Task {
                 await loadMetricsEfficiently()
@@ -69,6 +67,55 @@ struct MetricsContent: View {
         }
         .onDisappear {
             metricsTask?.cancel()
+        }
+        .overlay {
+            Color.black.opacity(isModelStatsPanelPresented ? 0.1 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(isModelStatsPanelPresented)
+                .onTapGesture {
+                    withAnimation(.smooth(duration: 0.3)) { isModelStatsPanelPresented = false }
+                }
+                .animation(.smooth(duration: 0.3), value: isModelStatsPanelPresented)
+        }
+        .overlay(alignment: .trailing) {
+            if isModelStatsPanelPresented {
+                ModelPerformancePanel {
+                    withAnimation(.smooth(duration: 0.3)) { isModelStatsPanelPresented = false }
+                }
+                .frame(width: 400)
+                .frame(maxHeight: .infinity)
+                .background(Color(NSColor.windowBackgroundColor))
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Color(NSColor.separatorColor)).frame(width: 1)
+                }
+                .shadow(color: .black.opacity(0.08), radius: 8, x: -2, y: 0)
+                .ignoresSafeArea()
+                .transition(.move(edge: .trailing))
+            }
+        }
+        .animation(.smooth(duration: 0.3), value: isModelStatsPanelPresented)
+    }
+
+    private var accessibilityPermissionCallout: some View {
+        PermissionCard(
+            icon: "hand.raised",
+            title: "Accessibility Access",
+            description: "VoiceInk needs Accessibility permission to work reliably across your entire Mac",
+            isGranted: isAccessibilityEnabled,
+            buttonTitle: "Open System Settings",
+            buttonAction: openAccessibilitySettings,
+            checkPermission: refreshAccessibilityStatus,
+            infoTipMessage: "VoiceInk uses Accessibility to work reliably across apps."
+        )
+    }
+
+    private func refreshAccessibilityStatus() {
+        isAccessibilityEnabled = AXIsProcessTrusted()
+    }
+
+    private func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
         }
     }
     
@@ -89,8 +136,7 @@ struct MetricsContent: View {
                 return
             }
 
-            let completedFilter = #Predicate<Transcription> { $0.transcriptionStatus == "completed" }
-            let count = try backgroundContext.fetchCount(FetchDescriptor<Transcription>(predicate: completedFilter))
+            let count = try backgroundContext.fetchCount(FetchDescriptor<SessionMetric>())
 
             guard !Task.isCancelled else {
                 await MainActor.run {
@@ -99,21 +145,19 @@ struct MetricsContent: View {
                 return
             }
 
-            var descriptor = FetchDescriptor<Transcription>(predicate: completedFilter)
-            descriptor.propertiesToFetch = [\.text, \.duration]
+            var descriptor = FetchDescriptor<SessionMetric>()
+            descriptor.propertiesToFetch = [\.wordCount, \.audioDuration]
 
             var words = 0
             var duration: TimeInterval = 0
 
-            try backgroundContext.enumerate(descriptor) { transcription in
-                words += transcription.text.split(whereSeparator: \.isWhitespace).count
-                duration += transcription.duration
+            try backgroundContext.enumerate(descriptor) { metric in
+                words += metric.wordCount
+                duration += metric.audioDuration
             }
 
             guard !Task.isCancelled else {
-                await MainActor.run {
-                    self.isLoadingMetrics = false
-                }
+                await MainActor.run { self.isLoadingMetrics = false }
                 return
             }
 
@@ -121,28 +165,43 @@ struct MetricsContent: View {
                 self.totalCount = count
                 self.totalWords = words
                 self.totalDuration = duration
-                self.isLoadingMetrics = false
+                // Stay in loading state if migration is still running and no data yet —
+                // sessionMetricsDidChange will trigger a reload when it finishes.
+                if count > 0 || !SessionMetricMigrationService.shared.isRunning {
+                    self.isLoadingMetrics = false
+                }
             }
         } catch {
             logger.error("Error loading metrics: \(error.localizedDescription, privacy: .public)")
-            await MainActor.run {
-                self.isLoadingMetrics = false
-            }
+            await MainActor.run { self.isLoadingMetrics = false }
         }
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "waveform")
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundColor(.secondary)
-            Text("No Transcriptions Yet")
-                .font(.title3.weight(.semibold))
-            Text("Start your first recording to unlock value insights.")
-                .foregroundColor(.secondary)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 24) {
+                    if !isAccessibilityEnabled {
+                        accessibilityPermissionCallout
+                    }
+
+                    VStack(spacing: 20) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 56, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Text("No Recorder Sessions Yet")
+                            .font(.title3.weight(.semibold))
+                        Text("Start your first recording to unlock value insights.")
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geometry.size.height - 56)
+                }
+                .padding(.vertical, 28)
+                .padding(.horizontal, 32)
+            }
+            .background(Color(.windowBackgroundColor))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.windowBackgroundColor))
     }
     
     // MARK: - Sections
@@ -230,9 +289,25 @@ struct MetricsContent: View {
             )
         }
     }
-    
+
     private var footerActionsView: some View {
-        CopySystemInfoButton()
+        HStack(spacing: 12) {
+            Button(action: {
+                withAnimation(.smooth(duration: 0.3)) { isModelStatsPanelPresented = true }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "gauge")
+                    Text("Model Performance")
+                }
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(.thinMaterial))
+            }
+            .buttonStyle(.plain)
+            .help("View transcription and enhancement model performance")
+            CopySystemInfoButton()
+        }
     }
     
     private var formattedTimeSaved: String {
@@ -284,12 +359,6 @@ struct MetricsContent: View {
         Int(Double(totalWords) * 5.0)
     }
     
-    private var dateFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
-    }
 }
 
 private enum Formatters {
