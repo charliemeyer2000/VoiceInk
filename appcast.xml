@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>VoiceInk</title>
+        <item>
+            <title>1.78</title>
+            <description><![CDATA[
+                <h3>What's New in v1.78</h3>
+                <ul>
+                    <li>🛠️ Fixed reserved shortcuts issue & paste reliability</li>
+                    <li>🔊 Updated sound options</li>
+                    <li>✨ Added Gemini 3.5 Flash model</li>
+                </ul>
+            ]]></description>
+            <pubDate>Thu, 21 May 2026 23:07:07 +0545</pubDate>
+            <sparkle:version>178</sparkle:version>
+            <sparkle:shortVersionString>1.78</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.4</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Beingpax/VoiceInk/releases/download/v1.78/VoiceInk.dmg" length="14407592" type="application/octet-stream" sparkle:edSignature="d2flnGSyH37YnoPhruoeGDqEdsVxUCYF9Q6XrAxs95lW39qcvSLWD8aLqmr1ZKD59CeiBvYIuZJ20So4a0D3Ag=="/>
+        </item>
+    </channel>
+</rss>
