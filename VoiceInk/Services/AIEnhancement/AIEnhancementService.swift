@@ -282,11 +282,20 @@ class AIEnhancementService: ObservableObject {
 
         if aiService.selectedProvider == .ollama {
             do {
-                let result = try await aiService.enhanceWithOllama(text: formattedText, systemPrompt: systemMessage)
+                let result = try await aiService.enhanceWithOllama(
+                    text: formattedText,
+                    systemPrompt: systemMessage,
+                    timeout: baseTimeout
+                )
                 return AIEnhancementOutputFilter.filter(result)
             } catch {
                 if let localError = error as? LocalAIError {
-                    throw EnhancementError.customError(localError.errorDescription ?? "An unknown Ollama error occurred.")
+                    switch localError {
+                    case .timeout:
+                        throw EnhancementError.timeout
+                    default:
+                        throw EnhancementError.customError(localError.errorDescription ?? "An unknown Ollama error occurred.")
+                    }
                 } else {
                     throw EnhancementError.customError(error.localizedDescription)
                 }
@@ -348,9 +357,21 @@ class AIEnhancementService: ObservableObject {
                 guard let baseURL = URL(string: effectiveBaseURL) else {
                     throw EnhancementError.customError("\(effectiveProvider.rawValue) has an invalid API endpoint URL. Please update it in AI settings.")
                 }
+<<<<<<< HEAD
                 let temperature = effectiveModel.lowercased().hasPrefix("gpt-5") ? 1.0 : 0.3
                 let reasoningEffort = ReasoningConfig.getReasoningParameter(for: effectiveModel)
                 let extraBody = ReasoningConfig.getExtraBodyParameters(for: effectiveModel)
+=======
+                let temperature = aiService.currentModel.lowercased().hasPrefix("gpt-5") ? 1.0 : 0.3
+                let reasoningEffort = ReasoningConfig.getReasoningParameter(
+                    for: aiService.selectedProvider,
+                    modelName: aiService.currentModel
+                )
+                let extraBody = ReasoningConfig.getExtraBodyParameters(
+                    for: aiService.selectedProvider,
+                    modelName: aiService.currentModel
+                )
+>>>>>>> upstream/main
                 result = try await OpenAILLMClient.chatCompletion(
                     baseURL: baseURL,
                     apiKey: effectiveAPIKey,
