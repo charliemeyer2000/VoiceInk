@@ -1,7 +1,6 @@
 import SwiftUI
 import AVFoundation
 import AppKit
-import KeyboardShortcuts
 
 struct OnboardingPermission: Identifiable {
     let id = UUID()
@@ -31,7 +30,7 @@ struct OnboardingPermission: Identifiable {
 
 struct OnboardingPermissionsView: View {
     @Binding var hasCompletedOnboarding: Bool
-    @EnvironmentObject private var hotkeyManager: HotkeyManager
+    @EnvironmentObject private var recordingShortcutManager: RecordingShortcutManager
     @ObservedObject private var audioDeviceManager = AudioDeviceManager.shared
     @State private var currentPermissionIndex = 0
     @State private var permissionStates: [Bool] = [false, false, false, false, false]
@@ -199,10 +198,7 @@ struct OnboardingPermissionsView: View {
                             
                             // Keyboard shortcut recorder (only shown for keyboard shortcut step)
                             if permissions[currentPermissionIndex].type == .keyboardShortcut {
-                                hotkeyView(
-                                    binding: $hotkeyManager.selectedHotkey1,
-                                    shortcutName: .toggleMiniRecorder
-                                ) { isConfigured in
+                                shortcutView { isConfigured in
                                     withAnimation {
                                         permissionStates[currentPermissionIndex] = isConfigured
                                         showAnimation = isConfigured
@@ -281,6 +277,7 @@ struct OnboardingPermissionsView: View {
         permissionStates[3] = CGPreflightScreenCaptureAccess()
 
         // Check keyboard shortcut
+<<<<<<< HEAD
         permissionStates[4] = hotkeyManager.isShortcutConfigured
 
         // Skip ahead to the first permission that still needs granting
@@ -290,6 +287,9 @@ struct OnboardingPermissionsView: View {
             // All permissions granted — go straight to model download
             showModelDownload = true
         }
+=======
+        permissionStates[4] = recordingShortcutManager.isShortcutConfigured
+>>>>>>> upstream/main
     }
     
     private func requestPermission() {
@@ -371,7 +371,7 @@ struct OnboardingPermissionsView: View {
             }
             
         case .keyboardShortcut:
-            // The keyboard shortcut is handled by the KeyboardShortcuts.Recorder
+            // The shortcut recorder handles this step directly.
             break
         }
     }
@@ -460,6 +460,7 @@ struct OnboardingPermissionsView: View {
     }
 
     @ViewBuilder
+<<<<<<< HEAD
     private func hotkeyView(
         binding: Binding<HotkeyManager.HotkeyOption>,
         shortcutName: KeyboardShortcuts.Name,
@@ -495,5 +496,29 @@ struct OnboardingPermissionsView: View {
         .padding()
         .background(Color.white.opacity(0.05))
         .cornerRadius(12)
+=======
+    private func shortcutView(onConfigured: @escaping (Bool) -> Void) -> some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            Text("Shortcut:")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.white.opacity(0.8))
+
+            ShortcutRecorder(action: .primaryRecording) {
+                recordingShortcutManager.primaryRecordingShortcut = .custom
+                recordingShortcutManager.updateShortcutStatus()
+                onConfigured(ShortcutStore.shortcut(for: .primaryRecording) != nil)
+            }
+            .controlSize(.large)
+
+            Spacer()
+        }
+        .padding()
+        .onAppear {
+            recordingShortcutManager.primaryRecordingShortcut = .custom
+            onConfigured(ShortcutStore.shortcut(for: .primaryRecording) != nil)
+        }
+>>>>>>> upstream/main
     }
 }

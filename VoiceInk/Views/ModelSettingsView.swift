@@ -4,13 +4,31 @@ struct ModelSettingsView: View {
     @ObservedObject var whisperPrompt: WhisperPrompt
     @AppStorage("SelectedLanguage") private var selectedLanguage: String = "en"
     @AppStorage("IsTextFormattingEnabled") private var isTextFormattingEnabled = true
+    @AppStorage(PunctuationCleanupMode.userDefaultsKey) private var punctuationCleanupModeRaw = PunctuationCleanupMode.current().rawValue
+    @AppStorage("LowercaseTranscription") private var lowercaseTranscription = false
     @AppStorage("IsVADEnabled") private var isVADEnabled = true
     @AppStorage("AppendTrailingSpace") private var appendTrailingSpace = true
     @AppStorage("PrewarmModelOnWake") private var prewarmModelOnWake = true
+<<<<<<< HEAD
     @AppStorage("KeepWhisperModelLoaded") private var keepWhisperModelLoaded = true
     @AppStorage("WhisperThreadCount") private var whisperThreadCount = 0
+=======
+    @AppStorage("showLiveTextPreview") private var showLiveTextPreview = false
+>>>>>>> upstream/main
     @State private var customPrompt: String = ""
     @State private var isEditing: Bool = false
+
+    private var punctuationCleanupMode: Binding<PunctuationCleanupMode> {
+        Binding(
+            get: {
+                PunctuationCleanupMode(rawValue: punctuationCleanupModeRaw) ?? PunctuationCleanupMode.current()
+            },
+            set: { newMode in
+                punctuationCleanupModeRaw = newMode.rawValue
+                PunctuationCleanupMode.setCurrent(newMode)
+            }
+        )
+    }
 
     var body: some View {
         Form {
@@ -50,15 +68,44 @@ struct ModelSettingsView: View {
             }
 
             Section {
-                Toggle(isOn: $appendTrailingSpace) {
-                    Text("Add Space After Paste")
+                Toggle(isOn: $isTextFormattingEnabled) {
+                    HStack(spacing: 4) {
+                        Text("Paragraph breaks")
+                        InfoTip("Apply intelligent text formatting to break large block of text into paragraphs.")
+                    }
                 }
                 .toggleStyle(.switch)
 
-                Toggle(isOn: $isTextFormattingEnabled) {
+                Picker(selection: punctuationCleanupMode) {
+                    ForEach(PunctuationCleanupMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                } label: {
                     HStack(spacing: 4) {
-                        Text("Automatic text formatting")
-                        InfoTip("Apply intelligent text formatting to break large block of text into paragraphs.")
+                        Text("Punctuation")
+                        InfoTip("Keep preserves punctuation as transcribed. Remove all strips punctuation marks from the transcribed text. Remove trailing period only removes a final period from the transcribed text.")
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Toggle(isOn: $lowercaseTranscription) {
+                    HStack(spacing: 4) {
+                        Text("Lowercase output")
+                        InfoTip("Convert transcription output to lowercase.")
+                    }
+                }
+                .toggleStyle(.switch)
+
+                FillerWordsSettingsView()
+            } header: {
+                Text("Transcript Formatting")
+            }
+
+            Section {
+                Toggle(isOn: $appendTrailingSpace) {
+                    HStack(spacing: 4) {
+                        Text("Add Space After Paste")
+                        InfoTip("Add a trailing space after pasted transcription output.")
                     }
                 }
                 .toggleStyle(.switch)
@@ -78,6 +125,7 @@ struct ModelSettingsView: View {
                     }
                 }
                 .toggleStyle(.switch)
+<<<<<<< HEAD
 
                 Toggle(isOn: $keepWhisperModelLoaded) {
                     HStack(spacing: 4) {
@@ -127,6 +175,18 @@ struct ModelSettingsView: View {
 
             Section {
                 FillerWordsSettingsView()
+=======
+
+                Toggle(isOn: $showLiveTextPreview) {
+                    HStack(spacing: 4) {
+                        Text("Show Live Text Preview")
+                        InfoTip("Displays the live transcript preview in the recorder while speaking. Only applies when using real-time streaming models.")
+                    }
+                }
+                .toggleStyle(.switch)
+            } header: {
+                Text("Advanced")
+>>>>>>> upstream/main
             }
         }
         .formStyle(.grouped)
